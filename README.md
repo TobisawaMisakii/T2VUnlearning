@@ -1,10 +1,15 @@
 # T2VUnlearning
 
-整体思路：
+整体思路1（已废弃）：
 
 * 北大仓库提供的带adapter的架构
-* hugging face diffusers库CogVideoX pipeline
+* 直接用diffusers的CogVideoX pipeline
 * 使用hook从pipeline中抓取需要的中间输出
+
+整体思路2：
+
+* 北大仓库提供的带adapter的架构
+* 仿照diffusers库，实现一个CogVideoX的inference
 
 ## Adapter
 
@@ -141,7 +146,16 @@ $$
 L_{unlearn} = E_{x,c,ε,t} ∥v_{neg} − v_{θ′} (x_t, c, t)∥_2^2.
 $$
 
+### $L_{preserve}$
 
+需要拿到的是：
+
+* **adapter**模型， 在**safe prompt**下的第30个（最后一个）transformer block的 feedforward layer 输出 $v_{\theta'}^{pre}$
+* **non-adapter**模型，在**safe prompt**下的第30个（最后一个）transformer block的 feedforward layer 输出 $v_{\theta}^{pre}$
+
+$$
+L_{pre} =  E_{x^{pre},c^{pre},ε,t} ∥v_{θ′} (x_t, c^{pre}, t) − v_{θ} (x_t, c^{pre}, t)∥_2^2.
+$$
 
 ### $L_{loc}$
 
@@ -151,18 +165,9 @@ TODO
 
 
 
-### $L_{preserve}$
+## Hook（discarded）
 
-需要拿到的是：
-
-* **adapter**模型， 在**safe prompt**下的第30个（最后一个）transformer block的 feedforward layer 输出 $v_{\theta'}^{pre}$
-* **non-adapter**模型，在**safe prompt**下的第30个（最后一个）transformer block的 feedforward layer 输出 $v_{\theta}^{pre}$
-
-计算MSE Loss
-
-
-
-### hook method
+### Method
 
 因为hugging face的pipeline实现非常集成化，并且其 **\_\_call\_\_** 方法封装很好，所以没有采用“用部件搭出cogvideox pipeline并拿到中间变量”的方法，而是转向 hook 这种方法
 
@@ -195,9 +200,7 @@ model.layer.register_forward_hook(hook_fn)
 
 可以在 hook 中把结果保存下来，供后续使用
 
-
-
-### hook in practice
+### Experiment
 
 在实验中我使用了 **forward hook**，从模型内部的特定模块（如 transformer 的某一层）提取特征（例如最后一层 FFN 的输出）
 
@@ -241,7 +244,7 @@ v_unsafe_adapter = intermediate_outputs_with_adapter_unsafe[target_module_names[
 
 随后即可计算$L_{unlearn}$和$L_{preserve}$
 
-## grad
+### Problem: grad
 
 问题：hook从pipeline中抓取出来的张量没有grad！
 
@@ -255,3 +258,23 @@ v_unsafe_adapter = intermediate_outputs_with_adapter_unsafe[target_module_names[
 ## 手动inference
 
 h20还是没坚持到算完所有 v  (transformer的输出)
+
+但是只用一个transformer，预测一下噪声这样的简单inference工作已经完成，说明流程上已经接近完成
+
+```shell
+CUDA_VISIBLE_DEVICES=0 python unlearn_train_cogvideox_transformer.py \
+  --concept="nudity" \
+  --prompt_path="/root/autodl-tmp/T2VUnlearning/evaluation/data/nudity-ring-a-bell.csv" \
+  --model_path /root/autodl-tmp/models/cogvideox-2b \
+  --eraser_rank 128 \
+  --eraser_ckpt_path="/root/autodl-tmp/T2VUnlearning/adapter/self_cogvideox2b_nudity_erasure" \
+  --num_inference_steps 50 \
+  --num_frames 49 \
+  --num_epoch 2 \
+  --generate_type t2v \
+  --dtype float16 \
+  --eta 7.0 \
+  --seed 42
+```
+
+用此脚本即可用作 unlearning 训练 （目前已实现 $L_{unlearn}$ 和 $L_{preserve}$ ）
