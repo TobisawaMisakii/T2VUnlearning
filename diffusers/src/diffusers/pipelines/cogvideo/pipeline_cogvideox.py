@@ -502,7 +502,7 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
     def interrupt(self):
         return self._interrupt
 
-    # @torch.no_grad()
+    @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(
         self,
@@ -609,99 +609,98 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
             [`~pipelines.cogvideo.pipeline_cogvideox.CogVideoXPipelineOutput`] if `return_dict` is True, otherwise a
             `tuple`. When returning a tuple, the first element is a list with the generated images.
         """
-        with torch.no_grad():
-            if isinstance(callback_on_step_end, (PipelineCallback, MultiPipelineCallbacks)):
-                callback_on_step_end_tensor_inputs = callback_on_step_end.tensor_inputs
+        if isinstance(callback_on_step_end, (PipelineCallback, MultiPipelineCallbacks)):
+            callback_on_step_end_tensor_inputs = callback_on_step_end.tensor_inputs
 
-            height = height or self.transformer.config.sample_height * self.vae_scale_factor_spatial
-            width = width or self.transformer.config.sample_width * self.vae_scale_factor_spatial
-            num_frames = num_frames or self.transformer.config.sample_frames
+        height = height or self.transformer.config.sample_height * self.vae_scale_factor_spatial
+        width = width or self.transformer.config.sample_width * self.vae_scale_factor_spatial
+        num_frames = num_frames or self.transformer.config.sample_frames
 
-            num_videos_per_prompt = 1
+        num_videos_per_prompt = 1
 
-            # 1. Check inputs. Raise error if not correct
-            self.check_inputs(
-                prompt,
-                height,
-                width,
-                negative_prompt,
-                callback_on_step_end_tensor_inputs,
-                prompt_embeds,
-                negative_prompt_embeds,
-            )
-            self._guidance_scale = guidance_scale
-            self._attention_kwargs = attention_kwargs
-            self._current_timestep = None
-            self._interrupt = False
+        # 1. Check inputs. Raise error if not correct
+        self.check_inputs(
+            prompt,
+            height,
+            width,
+            negative_prompt,
+            callback_on_step_end_tensor_inputs,
+            prompt_embeds,
+            negative_prompt_embeds,
+        )
+        self._guidance_scale = guidance_scale
+        self._attention_kwargs = attention_kwargs
+        self._current_timestep = None
+        self._interrupt = False
 
-            # 2. Default call parameters
-            if prompt is not None and isinstance(prompt, str):
-                batch_size = 1
-            elif prompt is not None and isinstance(prompt, list):
-                batch_size = len(prompt)
-            else:
-                batch_size = prompt_embeds.shape[0]
+        # 2. Default call parameters
+        if prompt is not None and isinstance(prompt, str):
+            batch_size = 1
+        elif prompt is not None and isinstance(prompt, list):
+            batch_size = len(prompt)
+        else:
+            batch_size = prompt_embeds.shape[0]
 
-            device = self._execution_device
+        device = self._execution_device
 
-            # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
-            # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
-            # corresponds to doing no classifier free guidance.
-            do_classifier_free_guidance = guidance_scale > 1.0
+        # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
+        # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
+        # corresponds to doing no classifier free guidance.
+        do_classifier_free_guidance = guidance_scale > 1.0
 
-            # 3. Encode input prompt
-            prompt_embeds, negative_prompt_embeds = self.encode_prompt(
-                prompt,
-                negative_prompt,
-                do_classifier_free_guidance,
-                num_videos_per_prompt=num_videos_per_prompt,
-                prompt_embeds=prompt_embeds,
-                negative_prompt_embeds=negative_prompt_embeds,
-                max_sequence_length=max_sequence_length,
-                device=device,
-            )
-            if do_classifier_free_guidance:
-                prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+        # 3. Encode input prompt
+        prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+            prompt,
+            negative_prompt,
+            do_classifier_free_guidance,
+            num_videos_per_prompt=num_videos_per_prompt,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            max_sequence_length=max_sequence_length,
+            device=device,
+        )
+        if do_classifier_free_guidance:
+            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
 
-            # 4. Prepare timesteps
-            timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
-            self._num_timesteps = len(timesteps)
+        # 4. Prepare timesteps
+        timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
+        self._num_timesteps = len(timesteps)
 
-            # 5. Prepare latents
-            latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
+        # 5. Prepare latents
+        latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
 
-            # For CogVideoX 1.5, the latent frames should be padded to make it divisible by patch_size_t
-            patch_size_t = self.transformer.config.patch_size_t
-            additional_frames = 0
-            if patch_size_t is not None and latent_frames % patch_size_t != 0:
-                additional_frames = patch_size_t - latent_frames % patch_size_t
-                num_frames += additional_frames * self.vae_scale_factor_temporal
+        # For CogVideoX 1.5, the latent frames should be padded to make it divisible by patch_size_t
+        patch_size_t = self.transformer.config.patch_size_t
+        additional_frames = 0
+        if patch_size_t is not None and latent_frames % patch_size_t != 0:
+            additional_frames = patch_size_t - latent_frames % patch_size_t
+            num_frames += additional_frames * self.vae_scale_factor_temporal
 
-            latent_channels = self.transformer.config.in_channels
-            latents = self.prepare_latents(
-                batch_size * num_videos_per_prompt,
-                latent_channels,
-                num_frames,
-                height,
-                width,
-                prompt_embeds.dtype,
-                device,
-                generator,
-                latents,
-            )
+        latent_channels = self.transformer.config.in_channels
+        latents = self.prepare_latents(
+            batch_size * num_videos_per_prompt,
+            latent_channels,
+            num_frames,
+            height,
+            width,
+            prompt_embeds.dtype,
+            device,
+            generator,
+            latents,
+        )
 
-            # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
-            extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
+        # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
+        extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-            # 7. Create rotary embeds if required
-            image_rotary_emb = (
-                self._prepare_rotary_positional_embeddings(height, width, latents.size(1), device)
-                if self.transformer.config.use_rotary_positional_embeddings
-                else None
-            )
+        # 7. Create rotary embeds if required
+        image_rotary_emb = (
+            self._prepare_rotary_positional_embeddings(height, width, latents.size(1), device)
+            if self.transformer.config.use_rotary_positional_embeddings
+            else None
+        )
 
-            # 8. Denoising loop
-            num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
+        # 8. Denoising loop
+        num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
 
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             # for DPM-solver++
@@ -771,14 +770,14 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
 
         self._current_timestep = None
 
-        with torch.no_grad():
-            if not output_type == "latent":
-                # Discard any padding frames that were added for CogVideoX 1.5
-                latents = latents[:, additional_frames:]
-                video = self.decode_latents(latents)
-                video = self.video_processor.postprocess_video(video=video, output_type=output_type)
-            else:
-                video = latents
+        
+        if not output_type == "latent":
+            # Discard any padding frames that were added for CogVideoX 1.5
+            latents = latents[:, additional_frames:]
+            video = self.decode_latents(latents)
+            video = self.video_processor.postprocess_video(video=video, output_type=output_type)
+        else:
+            video = latents
 
         # Offload all models
         self.maybe_free_model_hooks()
