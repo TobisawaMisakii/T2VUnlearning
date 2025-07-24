@@ -1,0 +1,90 @@
+CogVideoXTransformer3DModel(
+  (patch_embed): CogVideoXPatchEmbed(
+    (proj): Conv2d(16, 1920, kernel_size=(2, 2), stride=(2, 2))
+    (text_proj): Linear(in_features=4096, out_features=1920, bias=True)
+  )
+  (embedding_dropout): Dropout(p=0.0, inplace=False)
+  (time_proj): Timesteps()
+  (time_embedding): TimestepEmbedding(
+    (linear_1): Linear(in_features=1920, out_features=512, bias=True)
+    (act): SiLU()
+    (linear_2): Linear(in_features=512, out_features=512, bias=True)
+  )
+  (transformer_blocks): ModuleList(
+    (0-29): 30 x CogVideoXBlock(
+      (norm1): CogVideoXLayerNormZero(
+        (silu): SiLU()
+        (linear): Linear(in_features=512, out_features=11520, bias=True)
+        (norm): LayerNorm((1920,), eps=1e-05, elementwise_affine=True)
+      )
+      (attn1): Attention(
+        (norm_q): LayerNorm((64,), eps=1e-06, elementwise_affine=True)
+        (norm_k): LayerNorm((64,), eps=1e-06, elementwise_affine=True)
+        (to_q): Linear(in_features=1920, out_features=1920, bias=True)
+        (to_k): Linear(in_features=1920, out_features=1920, bias=True)
+        (to_v): Linear(in_features=1920, out_features=1920, bias=True)
+        (to_out): ModuleList(
+          (0): Linear(in_features=1920, out_features=1920, bias=True)
+          (1): Dropout(p=0.0, inplace=False)
+        )
+      )
+      (norm2): CogVideoXLayerNormZero(
+        (silu): SiLU()
+        (linear): Linear(in_features=512, out_features=11520, bias=True)
+        (norm): LayerNorm((1920,), eps=1e-05, elementwise_affine=True)
+      )
+      (ff): FeedForward(
+        (net): ModuleList(
+          (0): GELU(
+            (proj): Linear(in_features=1920, out_features=7680, bias=True)
+          )
+          (1): Dropout(p=0.0, inplace=False)
+          (2): Linear(in_features=7680, out_features=1920, bias=True)
+          (3): Dropout(p=0.0, inplace=False)
+        )
+      )
+    )
+  )
+  (norm_final): LayerNorm((1920,), eps=1e-05, elementwise_affine=True)
+  (norm_out): AdaLayerNorm(
+    (silu): SiLU()
+    (linear): Linear(in_features=512, out_features=3840, bias=True)
+    (norm): LayerNorm((1920,), eps=1e-05, elementwise_affine=True)
+  )
+  (proj_out): Linear(in_features=1920, out_features=64, bias=True)
+)
+
+FrozenDict(
+[('num_attention_heads', 30),
+('attention_head_dim', 64),
+('in_channels', 16),
+('out_channels', 16),
+('flip_sin_to_cos', True),
+('freq_shift', 0),
+('time_embed_dim', 512),
+('ofs_embed_dim', None),
+('text_embed_dim', 4096),
+('num_layers', 30),
+('dropout', 0.0),
+('attention_bias', True),
+('sample_width', 90),
+('sample_height', 60),
+('sample_frames', 49),
+('patch_size', 2),
+('patch_size_t', None),
+('temporal_compression_ratio', 4),
+('max_text_seq_length', 226),
+('activation_fn', 'gelu-approximate'),
+('timestep_activation_fn', 'silu'),
+('norm_elementwise_affine', True),
+('norm_eps', 1e-05),
+('spatial_interpolation_scale', 1.875),
+('temporal_interpolation_scale', 1.0),
+('use_rotary_positional_embeddings', False),
+('use_learned_positional_embeddings', False),
+('patch_bias', True),
+('_use_default_values',
+  ['patch_size_t', 'patch_bias', 'use_learned_positional_embeddings', 'ofs_embed_dim']),
+('_class_name', 'CogVideoXTransformer3DModel'),
+('_diffusers_version', '0.30.0.dev0'),
+('_name_or_path', 'models/cogvideox-2b')])

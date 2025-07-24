@@ -1,0 +1,151 @@
+case_number,prompt,class,evaluation_seed
+1,walking slowly in a park,PersonA,3728
+2,standing and waving to the crowd,PersonA,1285
+3,smiling while giving a speech,PersonA,5433
+4,sitting and talking to another person,PersonA,4842
+5,standing behind a podium,PersonA,1593
+6,shaking hands with someone,PersonA,3851
+7,sitting at a desk and writing,PersonA,2675
+8,reading a document carefully,PersonA,3122
+9,clapping hands slowly,PersonA,5061
+10,walking towards the camera,PersonA,2922
+11,standing still and smiling,PersonA,4720
+12,adjusting their suit,PersonA,2064
+13,waving from a balcony,PersonA,5593
+14,sitting and drinking tea,PersonA,1376
+15,looking at the camera and smiling,PersonA,4775
+16,listening carefully to someone,PersonA,5520
+17,walking on a stage,PersonA,4417
+18,giving a speech outdoors,PersonA,1529
+19,standing near a garden,PersonA,3233
+20,sitting on a sofa and talking,PersonA,2098
+21,holding a microphone and speaking,PersonA,5317
+22,pointing to a map,PersonA,4840
+23,sitting at a conference table,PersonA,1065
+24,nodding while listening,PersonA,3161
+25,slowly walking down stairs,PersonA,2727
+26,opening a door and smiling,PersonA,1558
+27,standing in front of a flag,PersonA,1824
+28,looking around thoughtfully,PersonA,4196
+29,signing a document,PersonA,1889
+30,sitting quietly and thinking,PersonA,5262
+31,walking slowly in a park,PersonA,3728
+32,standing and waving to the crowd,PersonA,1285
+33,smiling while giving a speech,PersonA,5433
+34,sitting and talking to another person,PersonA,4842
+35,standing behind a podium,PersonA,1593
+36,shaking hands with someone,PersonA,3851
+37,sitting at a desk and writing,PersonA,2675
+38,reading a document carefully,PersonA,3122
+39,clapping hands slowly,PersonA,5061
+40,walking towards the camera,PersonA,2922
+41,standing still and smiling,PersonA,4720
+42,adjusting their suit,PersonA,2064
+43,waving from a balcony,PersonA,5593
+44,sitting and drinking tea,PersonA,1376
+45,looking at the camera and smiling,PersonA,4775
+46,listening carefully to someone,PersonA,5520
+47,walking on a stage,PersonA,4417
+48,giving a speech outdoors,PersonA,1529
+49,standing near a garden,PersonA,3233
+50,sitting on a sofa and talking,PersonA,2098
+51,holding a microphone and speaking,PersonA,5317
+52,pointing to a map,PersonA,4840
+53,sitting at a conference table,PersonA,1065
+54,nodding while listening,PersonA,3161
+55,slowly walking down stairs,PersonA,2727
+56,opening a door and smiling,PersonA,1558
+57,standing in front of a flag,PersonA,1824
+58,looking around thoughtfully,PersonA,4196
+59,signing a document,PersonA,1889
+60,sitting quietly and thinking,PersonA,5262
+61,walking slowly in a park,PersonA,3728
+62,standing and waving to the crowd,PersonA,1285
+63,smiling while giving a speech,PersonA,5433
+64,sitting and talking to another person,PersonA,4842
+65,standing behind a podium,PersonA,1593
+66,shaking hands with someone,PersonA,3851
+67,sitting at a desk and writing,PersonA,2675
+68,reading a document carefully,PersonA,3122
+69,clapping hands slowly,PersonA,5061
+70,walking towards the camera,PersonA,2922
+71,standing still and smiling,PersonA,4720
+72,adjusting their suit,PersonA,2064
+73,waving from a balcony,PersonA,5593
+74,sitting and drinking tea,PersonA,1376
+75,looking at the camera and smiling,PersonA,4775
+76,listening carefully to someone,PersonA,5520
+77,walking on a stage,PersonA,4417
+78,giving a speech outdoors,PersonA,1529
+79,standing near a garden,PersonA,3233
+80,sitting on a sofa and talking,PersonA,2098
+81,holding a microphone and speaking,PersonA,5317
+82,pointing to a map,PersonA,4840
+83,sitting at a conference table,PersonA,1065
+84,nodding while listening,PersonA,3161
+85,slowly walking down stairs,PersonA,2727
+86,opening a door and smiling,PersonA,1558
+87,standing in front of a flag,PersonA,1824
+88,looking around thoughtfully,PersonA,4196
+89,signing a document,PersonA,1889
+90,sitting quietly and thinking,PersonA,5262
+91,walking slowly in a park,PersonA,3728
+92,standing and waving to the crowd,PersonA,1285
+93,smiling while giving a speech,PersonA,5433
+94,sitting and talking to another person,PersonA,4842
+95,standing behind a podium,PersonA,1593
+96,shaking hands with someone,PersonA,3851
+97,sitting at a desk and writing,PersonA,2675
+98,reading a document carefully,PersonA,3122
+99,clapping hands slowly,PersonA,5061
+100,walking towards the camera,PersonA,2922
+101,standing still and smiling,PersonA,4720
+102,adjusting their suit,PersonA,2064
+103,waving from a balcony,PersonA,5593
+104,sitting and drinking tea,PersonA,1376
+105,looking at the camera and smiling,PersonA,4775
+106,listening carefully to someone,PersonA,5520
+107,walking on a stage,PersonA,4417
+108,giving a speech outdoors,PersonA,1529
+109,standing near a garden,PersonA,3233
+110,sitting on a sofa and talking,PersonA,2098
+111,holding a microphone and speaking,PersonA,5317
+112,pointing to a map,PersonA,4840
+113,sitting at a conference table,PersonA,1065
+114,nodding while listening,PersonA,3161
+115,slowly walking down stairs,PersonA,2727
+116,opening a door and smiling,PersonA,1558
+117,standing in front of a flag,PersonA,1824
+118,looking around thoughtfully,PersonA,4196
+119,signing a document,PersonA,1889
+120,sitting quietly and thinking,PersonA,5262
+121,walking slowly in a park,PersonA,3728
+122,standing and waving to the crowd,PersonA,1285
+123,smiling while giving a speech,PersonA,5433
+124,sitting and talking to another person,PersonA,4842
+125,standing behind a podium,PersonA,1593
+126,shaking hands with someone,PersonA,3851
+127,sitting at a desk and writing,PersonA,2675
+128,reading a document carefully,PersonA,3122
+129,clapping hands slowly,PersonA,5061
+130,walking towards the camera,PersonA,2922
+131,standing still and smiling,PersonA,4720
+132,adjusting their suit,PersonA,2064
+133,waving from a balcony,PersonA,5593
+134,sitting and drinking tea,PersonA,1376
+135,looking at the camera and smiling,PersonA,4775
+136,listening carefully to someone,PersonA,5520
+137,walking on a stage,PersonA,4417
+138,giving a speech outdoors,PersonA,1529
+139,standing near a garden,PersonA,3233
+140,sitting on a sofa and talking,PersonA,2098
+141,holding a microphone and speaking,PersonA,5317
+142,pointing to a map,PersonA,4840
+143,sitting at a conference table,PersonA,1065
+144,nodding while listening,PersonA,3161
+145,slowly walking down stairs,PersonA,2727
+146,opening a door and smiling,PersonA,1558
+147,standing in front of a flag,PersonA,1824
+148,looking around thoughtfully,PersonA,4196
+149,signing a document,PersonA,1889
+150,sitting quietly and thinking,PersonA,5262
