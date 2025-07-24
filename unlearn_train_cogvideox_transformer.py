@@ -31,6 +31,7 @@ from diffusers.schedulers import CogVideoXDPMScheduler, CogVideoXDDIMScheduler
 
 import os
 import json
+import copy
 
 
 def args_parser():
@@ -164,9 +165,25 @@ def unlearn_train(args):
     text_encoder = pipe.text_encoder
     transformer = pipe.transformer
 
+    adapter_transformer = copy.deepcopy(transformer)
+    eraser = setup_cogvideo_adapter_eraser(
+        model=adapter_transformer,
+        eraser_rank=args.eraser_rank,
+        device="cuda",
+        dtype=dtype,
+    )
+
+    adam_optimizer = optim.AdamW(
+        params=[param for module in eraser.values() for param in module.parameters()],
+        lr=1e-4,
+        betas=(0.9, 0.999),
+        weight_decay=0.01,
+    )
+
     vae.to("cuda")
     text_encoder.to("cuda")
     transformer.to("cuda")
+    adapter_transformer.to("cuda")
 
     height = transformer.config.sample_height * pipe.vae_scale_factor_spatial
     width = transformer.config.sample_width * pipe.vae_scale_factor_spatial
@@ -193,6 +210,15 @@ def unlearn_train(args):
         
         res_prompt_embeds = pipe.encode_prompt(
             res_prompt,
+            negative_prompt=None,
+            do_classifier_free_guidance=do_classifier_free_guidance,
+            num_videos_per_prompt=num_videos_per_prompt,
+            max_sequence_length=226,
+            device='cuda',
+        )[0]    # torch.Size([1, 226, 4096])
+
+        zero_embeds = pipe.encode_prompt(
+            "",
             negative_prompt=None,
             do_classifier_free_guidance=do_classifier_free_guidance,
             num_videos_per_prompt=num_videos_per_prompt,
@@ -228,7 +254,7 @@ def unlearn_train(args):
             generator=None,
             latents=None,
         )# torch.Size([1, 13, 16, 60, 90])
-        # print(f"Using latents shape: {latents.shape}")  
+        # print(f"Using latents shape: {latents.shape}") 
 
         # Create rotary embeds if required
         image_rotary_emb = (
@@ -253,10 +279,8 @@ def unlearn_train(args):
                 timestep = t.expand(latent_model_input.shape[0])
 
                 # predict noise model_output
-                # print(transformer)
-                total_params = sum(p.numel() for p in transformer.parameters())
-                print(f"Total parameters in transformer: {total_params}")
-                
+
+                # no adapter, unsafe prompt
                 noise_pred = transformer(
                     hidden_states=latent_model_input,
                     encoder_hidden_states=prompt_embeds,
@@ -264,11 +288,89 @@ def unlearn_train(args):
                     image_rotary_emb=image_rotary_emb,
                     attention_kwargs=None,
                     return_dict=False,
-                )[0]
-                exit(0)
+                )[0]    # torch.Size([1, 13, 16, 60, 90])
                 noise_pred = noise_pred.float()
-                print(noise_pred.shape)
-                
+                v_unsafe_origin = noise_pred
+                print("v_unsafe_origin shape:", v_unsafe_origin.shape)
+
+                # no adapter, safe prompt
+                v_safe_origin = transformer(
+                    hidden_states=latent_model_input,
+                    encoder_hidden_states=res_prompt_embeds,
+                    timestep=timestep,
+                    image_rotary_emb=image_rotary_emb,
+                    attention_kwargs=None,
+                    return_dict=False,
+                )[0]
+                v_safe_origin = v_safe_origin.float()
+                print("v_safe_origin shape:", v_safe_origin.shape)
+
+                # with adapter, unsafe prompt
+                v_unsafe_adapter = adapter_transformer(
+                    hidden_states=latent_model_input,
+                    encoder_hidden_states=prompt_embeds,
+                    timestep=timestep,
+                    image_rotary_emb=image_rotary_emb,
+                    attention_kwargs=None,
+                    return_dict=False,
+                )[0]
+                v_unsafe_adapter = v_unsafe_adapter.float()
+                print("v_unsafe_adapter shape:", v_unsafe_adapter.shape)
+
+                # with adapter, safe prompt
+                v_safe_origin = adapter_transformer(
+                    hidden_states=latent_model_input,
+                    encoder_hidden_states=res_prompt_embeds,
+                    timestep=timestep,
+                    image_rotary_emb=image_rotary_emb,
+                    attention_kwargs=None,
+                    return_dict=False,
+                )[0]
+                v_safe_origin = v_safe_origin.float()
+                print("v_safe_adapter shape:", v_safe_origin.shape)
+
+                # no adapter, no prompt
+                v_noprompt_origin = transformer(
+                    hidden_states=latent_model_input,
+                    encoder_hidden_states=zero_embeds,
+                    timestep=timestep,
+                    image_rotary_emb=image_rotary_emb,
+                    attention_kwargs=None,
+                    return_dict=False,
+                )[0]
+                v_noprompt_origin = v_noprompt_origin.float()
+                print("v_noprompt_origin shape:", v_noprompt_origin.shape)
+
+                # calculate loss
+                loss_unlearn = 0.0
+                loss_preserve = 0.0
+                loss_localize = 0.0
+
+                # loss unlearn
+                # adapter模型， 在unsafe prompt下的第30个（最后一个）transformer block的 feedforward layer 输出 $v_{\theta'}(x_t, c, t)$
+                v_neg = v_noprompt_origin - args.eta * (v_unsafe_origin - v_noprompt_origin)
+                loss_unlearn = torch.mean((v_neg - v_unsafe_adapter) ** 2)
+                print(f"loss_unlearn: {loss_unlearn.item()}")
+                print(loss_unlearn.requires_grad)
+
+                # loss preserve
+                # loss localize
+
+                loss = loss_unlearn + loss_preserve + loss_localize
+
+                # backward
+                adam_optimizer.zero_grad()
+                loss.backward()
+                adam_optimizer.step()
+                wandb.log({
+                    "epoch": epoch,
+                    "prompt": prompt,
+                    "res_prompt": res_prompt,
+                    "loss_unlearn": loss_unlearn.item(),
+                    "loss_preserve": loss_preserve.item(),
+                    "loss_localize": loss_localize.item(),
+                    "loss_total": loss.item(),
+                })
 
                 # perform guidance
                 if use_dynamic_cfg:
@@ -294,87 +396,10 @@ def unlearn_train(args):
                     )
                 latents = latents.to(prompt_embeds.dtype)
 
-                # call the callback, if provided
-                if callback_on_step_end is not None:
-                    callback_kwargs = {}
-                    for k in callback_on_step_end_tensor_inputs:
-                        callback_kwargs[k] = locals()[k]
-                    callback_outputs = callback_on_step_end(pipe, i, t, callback_kwargs)
-
-                    latents = callback_outputs.pop("latents", latents)
-                    prompt_embeds = callback_outputs.pop("prompt_embeds", prompt_embeds)
-                    negative_prompt_embeds = callback_outputs.pop("negative_prompt_embeds", negative_prompt_embeds)
-
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % scheduler.order == 0):
                     progress_bar.update()
 
-                if XLA_AVAILABLE:
-                    xm.mark_step()
-
         self._current_timestep = None
-
-
-    if not args.generate_type == "t2v":
-        raise NotImplementedError(
-            f"Generate type {args.generate_type} is not implemented for unlearning training."
-        )
-
-    eraser = setup_cogvideo_adapter_eraser(
-        model=pipe.transformer,
-        eraser_rank=args.eraser_rank,
-        device="cuda",
-        dtype=dtype,
-    )
-    # parameters = [param for module in eraser.values() for param in module.parameters()]
-    # print(f"Number of parameters in eraser: {sum(p.numel() for p in parameters)}")
-    # print(f"Number of modules in eraser: {len(eraser)}")
-    # exit(0)
-
-    adam_optimizer = optim.AdamW(
-        params=[param for module in eraser.values() for param in module.parameters()],
-        lr=1e-4,
-        betas=(0.9, 0.999),
-        weight_decay=0.01,
-    )
-
-
-    # print(pipe.transformer.transformer_blocks[0].attn1.adapter)
-    # print(pipe.transformer.transformer_blocks[0])
-    # print(pipe.transformer.transformer_blocks[29].ff)
-
-    for epoch in range(args.num_epoch):
-        for prompt, res_prompt in train_data_loader(args.prompt_path):
-
-
-
-            # calculate loss
-            loss_unlearn = 0.0
-            loss_preserve = 0.0
-            loss_localize = 0.0
-
-            # loss unlearn
-            # adapter模型， 在unsafe prompt下的第30个（最后一个）transformer block的 feedforward layer 输出 $v_{\theta'}(x_t, c, t)$
-            v_neg = v_noprompt_origin - args.eta * (v_unsafe_origin - v_noprompt_origin)
-            loss_unlearn = torch.mean((v_neg - v_unsafe_adapter) ** 2)
-
-            # loss preserve
-            # loss localize
-
-            loss = loss_unlearn + loss_preserve + loss_localize
-
-            # backward
-            adam_optimizer.zero_grad()
-            loss.backward()
-            adam_optimizer.step()
-            wandb.log({
-                "epoch": epoch,
-                "prompt": prompt,
-                "res_prompt": res_prompt,
-                "loss_unlearn": loss_unlearn.item(),
-                "loss_preserve": loss_preserve.item(),
-                "loss_localize": loss_localize.item(),
-                "loss_total": loss.item(),
-            })
 
 
 def train_data_loader(prompt_path, batch_size=1):
