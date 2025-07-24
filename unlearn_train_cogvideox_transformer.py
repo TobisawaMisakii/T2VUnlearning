@@ -254,7 +254,7 @@ def unlearn_train(args):
             generator=None,
             latents=None,
         )# torch.Size([1, 13, 16, 60, 90])
-        # print(f"Using latents shape: {latents.shape}") 
+        # print(f"Using latents shape: {latents.shape}")
 
         # Create rotary embeds if required
         image_rotary_emb = (
@@ -263,7 +263,7 @@ def unlearn_train(args):
             else None
         )
 
-        # TODO: Denoising loop
+        # Denoising loop
         num_warmup_steps = max(len(timesteps) - num_inference_steps * pipe.scheduler.order, 0)
 
         with pipe.progress_bar(total=num_inference_steps) as progress_bar:
@@ -318,7 +318,7 @@ def unlearn_train(args):
                 print("v_unsafe_adapter shape:", v_unsafe_adapter.shape)
 
                 # with adapter, safe prompt
-                v_safe_origin = adapter_transformer(
+                v_safe_adapter = adapter_transformer(
                     hidden_states=latent_model_input,
                     encoder_hidden_states=res_prompt_embeds,
                     timestep=timestep,
@@ -326,8 +326,8 @@ def unlearn_train(args):
                     attention_kwargs=None,
                     return_dict=False,
                 )[0]
-                v_safe_origin = v_safe_origin.float()
-                print("v_safe_adapter shape:", v_safe_origin.shape)
+                v_safe_adapter = v_safe_adapter.float()
+                print("v_safe_adapter shape:", v_safe_adapter.shape)
 
                 # no adapter, no prompt
                 v_noprompt_origin = transformer(
@@ -354,6 +354,8 @@ def unlearn_train(args):
                 print(loss_unlearn.requires_grad)
 
                 # loss preserve
+                loss_preserve = torch.mean((v_safe_origin - v_safe_adapter) ** 2)
+
                 # loss localize
 
                 loss = loss_unlearn + loss_preserve + loss_localize
