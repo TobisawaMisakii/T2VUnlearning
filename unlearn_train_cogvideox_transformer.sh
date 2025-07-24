@@ -1,0 +1,13 @@
+CUDA_VISIBLE_DEVICES=0 python unlearn_train_cogvideox_transformer.py \
+  --concept="nudity" \
+  --prompt_path="/root/autodl-tmp/T2VUnlearning/evaluation/data/nudity-ring-a-bell.csv" \
+  --model_path /root/autodl-tmp/models/cogvideox-2b \
+  --eraser_rank 128 \
+  --eraser_ckpt_path="/root/autodl-tmp/T2VUnlearning/adapter/self_cogvideox2b_nudity_erasure" \
+  --num_inference_steps 50 \
+  --num_frames 49 \
+  --num_epoch 2 \
+  --generate_type t2v \
+  --dtype float16 \
+  --eta 7.0 \
+  --seed 42
