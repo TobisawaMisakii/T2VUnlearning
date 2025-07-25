@@ -1,13 +1,13 @@
 CUDA_VISIBLE_DEVICES=0 python unlearn_train_cogvideox_decomposed.py \
-  --is_train \
+  --is_train True\
   --concept="nudity" \
-  --prompt_path="/root/autodl-tmp/T2VUnlearning/evaluation/data/nudity-ring-a-bell.csv" \
+  --prompt_path="/root/autodl-tmp/T2VUnlearning/evaluation/data/10prompt_pairs.csv" \
   --model_path /root/autodl-tmp/models/cogvideox-2b \
   --eraser_rank 128 \
-  --eraser_ckpt_path="/root/autodl-tmp/T2VUnlearning/adapter/self_cogvideox2b_nudity_erasure" \
+  --eraser_ckpt_path="/root/autodl-tmp/T2VUnlearning/adapter/self2_cogvideox2b_nudity_erasure" \
   --num_inference_steps 50 \
-  --num_frames 49 \
-  --num_epoch 2 \
+  --num_frames 17 \
+  --num_epoch 10 \
   --generate_type t2v \
   --dtype float16 \
   --eta 7.0 \

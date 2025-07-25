@@ -31,6 +31,7 @@ from diffusers.schedulers import CogVideoXDPMScheduler, CogVideoXDDIMScheduler
 
 import os
 import json
+import math
 import copy
 
 
@@ -105,7 +106,7 @@ def args_parser():
         help="Whether to train the model or do inference"
     )
     parser.add_argument(
-        "--alpah",
+        "--alpha",
         type=float,
         default=1.0,
         help="The alpha hyperparam for localization loss"
@@ -222,7 +223,7 @@ def inference_decomposed(args):
 
     height = transformer.config.sample_height * pipe.vae_scale_factor_spatial
     width = transformer.config.sample_width * pipe.vae_scale_factor_spatial
-    num_frames = transformer.config.sample_frames
+    num_frames = args.num_frames if args.num_frames is not None else transformer.config.sample_frames
 
     num_videos_per_prompt = 1
     do_classifier_free_guidance = True
@@ -240,9 +241,9 @@ def inference_decomposed(args):
             num_videos_per_prompt=num_videos_per_prompt,
             max_sequence_length=226,
             device='cuda',
-        ).detach()    # torch.Size([1, 226, 4096])
+        )   # torch.Size([1, 226, 4096])
         if do_classifier_free_guidance:
-            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0).detach()
 
 
         # 2. Prepare timesteps
@@ -352,19 +353,20 @@ def inference_decomposed(args):
 
 def unlearn_train(args):
     dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
+    device = 'cuda'
     pipe = CogVideoXPipeline.from_pretrained(args.model_path, torch_dtype=dtype)
-    scheduler = CogVideoXDPMScheduler.from_pretrained(
-        args.model_path, subfolder="scheduler", torch_dtype=dtype
-    )
+    scheduler = CogVideoXDDIMScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
+
 
     vae =  pipe.vae
-    tokenizer = pipe.tokenizer
     text_encoder = pipe.text_encoder
     transformer = pipe.transformer
 
-    do_classifier_free_guidance = True
+    num_videos_per_prompt = 1
+    do_classifier_free_guidance = False
     negative_prompt = None
     use_dynamic_cfg = True
+    guidance_scale = 6.0
 
     # freeze transformer
     for param in transformer.parameters():
@@ -374,16 +376,23 @@ def unlearn_train(args):
     for param in text_encoder.parameters():
         param.requires_grad = False
 
-    # 检查任意一个参数的requires_grad状态
-    print(next(pipe.transformer.parameters()).requires_grad)
-
     adapter_transformer = copy.deepcopy(transformer)
+    # print("original to_q std:", transformer.transformer_blocks[0].attn1.to_q.weight.std().item())
+    # print("ceepcopy to_q std:", adapter_transformer.transformer_blocks[0].attn1.to_q.weight.std().item())
     eraser = setup_cogvideo_adapter_eraser(
         model=adapter_transformer,
         eraser_rank=args.eraser_rank,
         device="cuda",
         dtype=dtype,
     )
+    # print("adapter to_q std:", adapter_transformer.transformer_blocks[0].attn1.attn.to_q.weight.std().item())
+    # exit(0)
+    adapter_parameters = [param for module in eraser.values() for param in module.parameters()]
+    for p in adapter_parameters:
+        p.data = p.data.half()
+        # p._fp32_copy = p.data.float()
+        p._fp32_copy = (p.data.float() + 1e-6 * torch.randn_like(p.data.float()))
+
 
     
     for block in transformer.transformer_blocks:
@@ -398,14 +407,13 @@ def unlearn_train(args):
     #     if param.requires_grad:
     #         print(f"Trainable in atptransformer: {name}, shape: {tuple(param.shape)}")
 
-    for name, module in eraser.items():
-        for pname, param in module.named_parameters():
-            print(f"{name}.{pname} - mean: {param.data.mean()}, std: {param.data.std()}, requires_grad: {param.requires_grad}")
-    # exit(0)
+    # for name, module in eraser.items():
+    #     for pname, param in module.named_parameters():
+    #         print(f"{name}.{pname} - mean: {param.data.mean()}, std: {param.data.std()}, requires_grad: {param.requires_grad}")
 
     adam_optimizer = optim.AdamW(
-        params=[param for module in eraser.values() for param in module.parameters()],
-        lr=1e-6,
+        params=adapter_parameters,
+        lr=1e-4,
         betas=(0.9, 0.999),
         weight_decay=0.01,
     )
@@ -417,52 +425,62 @@ def unlearn_train(args):
 
     height = transformer.config.sample_height * pipe.vae_scale_factor_spatial
     width = transformer.config.sample_width * pipe.vae_scale_factor_spatial
-    num_frames = transformer.config.sample_frames
-    # Using height: 480, width: 720, num_frames: 49
-    # print(f"Using height: {height}, width: {width}, num_frames: {num_frames}")
-    # exit(0)
+    num_frames = args.num_frames if args.num_frames is not None else transformer.config.sample_frames
+    # Using height: 480, width: 720, num_frames: 17
 
-    num_videos_per_prompt = 1
-    do_classifier_free_guidance = False
 
     for epoch in range(args.num_epoch):
         # only compute once
-        zero_embeds = pipe.encode_prompt(
+        zero_embeds, negative_prompt_embeds = pipe.encode_prompt(
                     "",
                     negative_prompt,
-                    do_classifier_free_guidance=do_classifier_free_guidance,
+                    do_classifier_free_guidance,
                     num_videos_per_prompt=num_videos_per_prompt,
                     max_sequence_length=226,
                     device='cuda',
-                )[0].detach()    # torch.Size([1, 226, 4096])
-        
+                )    # zero_embeds.shape: torch.Size([1, 226, 4096])
+        if do_classifier_free_guidance:
+            zero_embeds = torch.cat([negative_prompt_embeds, zero_embeds], dim=0).detach()
+        else:
+            zero_embeds = zero_embeds.detach()
+
+
         # for each prompt pairs do unlearning training
         for prompt, res_prompt in train_data_loader(args.prompt_path):
             batch_size = 1
 
             with torch.no_grad():
+                torch.cuda.empty_cache()
                 # 1. Encode input prompt
-                prompt_embeds = pipe.encode_prompt(
+                prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
                     prompt,
                     negative_prompt,
-                    do_classifier_free_guidance=do_classifier_free_guidance,
+                    do_classifier_free_guidance,
                     num_videos_per_prompt=num_videos_per_prompt,
                     max_sequence_length=226,
                     device='cuda',
-                )[0].detach()    # torch.Size([1, 226, 4096])
+                )   # torch.Size([1, 226, 4096])
+                if do_classifier_free_guidance:
+                    prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0).detach()
+                else:
+                    prompt_embeds = prompt_embeds.detach()
 
-                res_prompt_embeds = pipe.encode_prompt(
+                res_prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
                     res_prompt,
                     negative_prompt,
-                    do_classifier_free_guidance=do_classifier_free_guidance,
+                    do_classifier_free_guidance,
                     num_videos_per_prompt=num_videos_per_prompt,
                     max_sequence_length=226,
                     device='cuda',
-                )[0].detach()    # torch.Size([1, 226, 4096])
+                )   # torch.Size([1, 226, 4096])
+                if do_classifier_free_guidance:
+                    res_prompt_embeds = torch.cat([negative_prompt_embeds, res_prompt_embeds], dim=0).detach()
+                else:
+                    res_prompt_embeds = res_prompt_embeds.detach()
 
                 # 2. Prepare timesteps
                 timesteps, num_inference_steps = retrieve_timesteps(
-                    scheduler, args.num_inference_steps, device='cuda', timesteps=None
+                    scheduler, args.num_inference_steps, device, timesteps=None
                 ) # do not support custom timesteps
                 pipe._num_timesteps = len(timesteps)
                 # print(f"Using timesteps: {timesteps}")
@@ -504,6 +522,17 @@ def unlearn_train(args):
                 # for DPM-solver++
                 old_pred_original_sample = None
                 for i, t in enumerate(timesteps):
+
+                    # # 遍历所有 adapter 参数并打印梯度
+                    # for module_name, module in eraser.items():
+                    #     for name, param in module.named_parameters():
+                    #         if param.grad is not None:
+                    #             print(f"[{module_name}] {name} grad mean/std/max:", 
+                    #                 param.grad.mean().item(), 
+                    #                 param.grad.std().item(), 
+                    #                 param.grad.abs().max().item())
+
+                    torch.cuda.empty_cache()
 
                     pipe._current_timestep = t
                     latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
@@ -556,6 +585,7 @@ def unlearn_train(args):
                         # print("v_noprompt_origin grad:", v_noprompt_origin.requires_grad)
 
                     # with adapter, unsafe prompt
+                    torch.cuda.empty_cache()
                     v_unsafe_adapter = adapter_transformer(
                         hidden_states=latent_model_input,
                         encoder_hidden_states=prompt_embeds,
@@ -569,6 +599,7 @@ def unlearn_train(args):
                     # print("v_unsafe_adapter grad:", v_unsafe_adapter.requires_grad)
 
                     # with adapter, safe prompt
+                    torch.cuda.empty_cache()
                     v_safe_adapter = adapter_transformer(
                         hidden_states=latent_model_input,
                         encoder_hidden_states=res_prompt_embeds,
@@ -580,30 +611,50 @@ def unlearn_train(args):
                     v_safe_adapter = v_safe_adapter.float()
 
                     # calculate loss
-                    loss_unlearn = 0.0
-                    loss_preserve = 0.0
-                    loss_localize = 0.0
+                    torch.cuda.empty_cache()
+                    loss_unlearn = torch.tensor(0.0, device=device, dtype=dtype)
+                    loss_preserve = torch.tensor(0.0, device=device, dtype=dtype)
+                    loss_localize = torch.tensor(0.0, device=device, dtype=dtype)
 
-                    # loss unlearn
+                    
                     v_neg = v_noprompt_origin - args.eta * (v_unsafe_origin - v_noprompt_origin)
+                    # debug NaN
+                    # print(f"[DEBUG] step={t}")
+                    # print("v_noprompt_origin mean/std:", v_noprompt_origin.mean().item(), v_noprompt_origin.std().item())
+                    # print("v_unsafe_origin   mean/std:", v_unsafe_origin.mean().item(), v_unsafe_origin.std().item())
+                    # print("v_neg             mean/std/max/min:", 
+                    #     v_neg.mean().item(), v_neg.std().item(),
+                    #     v_neg.max().item(), v_neg.min().item())
+                    # print("v_unsafe_adapter  mean/std/max/min:", 
+                    #     v_unsafe_adapter.mean().item(), v_unsafe_adapter.std().item(),
+                    #     v_unsafe_adapter.max().item(), v_unsafe_adapter.min().item())
+                    
+                    # loss unlearn
                     loss_unlearn = torch.mean((v_neg - v_unsafe_adapter) ** 2)
-                    # print(loss_unlearn.requires_grad, loss_unlearn.grad_fn)
-
-                    print("loss_unlearn:", loss_unlearn.item())
-                    print("v_neg mean/std:", v_neg.mean().item(), v_neg.std().item())
-                    print("v_unsafe_adapter mean/std:", v_unsafe_adapter.mean().item(), v_unsafe_adapter.std().item())
-
+                    # print("loss_unlearn:", loss_unlearn.item())
 
                     # loss preserve
                     loss_preserve = torch.mean((v_safe_origin - v_safe_adapter) ** 2)
+                    # print("loss_preserve:", loss_preserve.item())
 
                     # loss localize
-                    loss = loss_unlearn + args.alpha * loss_preserve + args.beta * loss_localize
+                    loss = loss_unlearn + args.alpha * loss_localize + args.beta * loss_preserve
+                    # print("total loss:", loss.item())
 
                     # backward
                     adam_optimizer.zero_grad()
                     loss.backward()
+                    for p in adapter_parameters:
+                        p._fp32_copy.grad = p.grad.float()
+                    
+                    fp32_params = [p._fp32_copy for p in adapter_parameters]
+                    adam_optimizer.param_groups[0]["params"] = fp32_params  # 确保 optimizer 用的是 fp32 copy
+                    torch.nn.utils.clip_grad_norm_(fp32_params, max_norm=1.0)
                     adam_optimizer.step()
+
+                    for p in adapter_parameters:
+                        p.data.copy_(p._fp32_copy.half())
+
 
                     wandb.log({
                         "epoch": epoch,
@@ -615,6 +666,14 @@ def unlearn_train(args):
                         "loss_total": loss.item(),
                     })
                     print(f"Epoch {epoch}, Step {i+1}/{len(timesteps)}, Loss: {loss.item()}")
+
+                if use_dynamic_cfg:
+                    pipe._guidance_scale = 1 + guidance_scale * (
+                    (1 - math.cos(math.pi * ((num_inference_steps - t.item()) / num_inference_steps) ** 5.0)) / 2
+                )
+                if do_classifier_free_guidance:
+                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
 
                     # compute the previous noisy sample x_t -> x_t-1
@@ -635,11 +694,11 @@ def unlearn_train(args):
                         progress_bar.update()
 
             pipe._current_timestep = None
+
     save_cogvideo_eraser_from_transformer(
         folder_path=args.eraser_ckpt_path,
         transformer=adapter_transformer,
     )
-    
 
 
 def train_data_loader(prompt_path, batch_size=1):

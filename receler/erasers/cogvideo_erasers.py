@@ -47,7 +47,8 @@ def setup_cogvideo_adapter_eraser(model, eraser_rank, device, dtype):
                 print("changing: ",name)
                 original_attention = module.attn1
                 modified_attention = CogVideoXWithEraser(original_attention, eraser_rank).to(dtype=dtype)
-                modified_attention.to_empty(device=device)
+                # modified_attention.to_empty(device=device)
+                modified_attention.to(device=device)
                 module.attn1 = modified_attention
 
     replace_transformer_block(model)
@@ -102,13 +103,18 @@ class CogVideoXWithEraser(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         **cross_attention_kwargs,
     ) -> torch.Tensor:
-        
+        # print("[DEBUG attn input] mean:", hidden_states.mean().item(), "std:", hidden_states.std().item())
+        # print(self.attn)
+        # print("to_q.weight std:", self.attn.to_q.weight.std().item())
+        # print("to_k.weight std:", self.attn.to_k.weight.std().item())
+        # print("to_v.weight std:", self.attn.to_v.weight.std().item())
         hidden_states, encoder_hidden_states = self.attn(
             hidden_states,
             encoder_hidden_states,
             attention_mask,
             **cross_attention_kwargs,
         )
+        # print("[DEBUG attn output] mean:", hidden_states.mean().item(), "std:", hidden_states.std().item())
 
         if self.adapter.use_eraser:
             hidden_states = hidden_states + self.adapter(hidden_states)

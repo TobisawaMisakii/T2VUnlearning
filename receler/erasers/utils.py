@@ -307,6 +307,14 @@ class AdapterEraser(nn.Module, EraserControlMixin):
         self.down = nn.Linear(dim, mid_dim)
         self.act = nn.GELU()
         self.up = zero_module(nn.Linear(mid_dim, dim))
+        # Initialize weights
+        nn.init.normal_(self.down.weight, mean=0.0, std=1e-2)
+        nn.init.zeros_(self.down.bias)
+        nn.init.normal_(self.up.weight, mean=0.0, std=1e-2)
+        nn.init.zeros_(self.up.bias)
 
     def forward(self, hidden_states):
+        # print("adapter hidden_states mean/std:", hidden_states.mean().item(), hidden_states.std().item())
+        # d = self.down(hidden_states)
+        # print("down output mean/std:", d.mean().item(), d.std().item())
         return self.up(self.act(self.down(hidden_states)))
