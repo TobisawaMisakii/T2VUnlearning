@@ -4,12 +4,12 @@ CUDA_VISIBLE_DEVICES=0 python unlearn_train_cogvideox_decomposed.py \
   --prompt_path="/root/autodl-tmp/T2VUnlearning/evaluation/data/10prompt_pairs.csv" \
   --model_path /root/autodl-tmp/models/cogvideox-2b \
   --eraser_rank 128 \
-  --eraser_ckpt_path="/root/autodl-tmp/T2VUnlearning/adapter/self2_cogvideox2b_nudity_erasure" \
+  --eraser_ckpt_path="/root/autodl-tmp/T2VUnlearning/adapter/10prompt_50step_1epoch_cogvideox2b_nudity_erasure" \
   --num_inference_steps 50 \
   --num_frames 17 \
   --num_epoch 1 \
   --generate_type t2v \
-  --dtype float16 \
+  --dtype float32 \
   --eta 7.0 \
   --alpha 1.0 \
   --beta 0.0 \

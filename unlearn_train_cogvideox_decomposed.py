@@ -447,6 +447,7 @@ def unlearn_train(args):
 
         # for each prompt pairs do unlearning training
         for prompt, res_prompt in train_data_loader(args.prompt_path):
+            print(f"Epoch {epoch}, Prompt: {prompt}, Res-Prompt: {res_prompt}")
             batch_size = 1
 
             with torch.no_grad():
