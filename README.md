@@ -257,9 +257,7 @@ v_unsafe_adapter = intermediate_outputs_with_adapter_unsafe[target_module_names[
 
 ## 手动inference
 
-h20还是没坚持到算完所有 v  (transformer的输出)
-
-但是只用一个transformer，预测一下噪声这样的简单inference工作已经完成，说明流程上已经接近完成
+对transformer等其他主干进行冻结，加入eraser之后的adapter_transformer只允许adapter的参数使用梯度，模型能在h20上正常训练。
 
 ```shell
 CUDA_VISIBLE_DEVICES=0 python unlearn_train_cogvideox_transformer.py \
@@ -278,3 +276,49 @@ CUDA_VISIBLE_DEVICES=0 python unlearn_train_cogvideox_transformer.py \
 ```
 
 用此脚本即可用作 unlearning 训练 （目前已实现 $L_{unlearn}$ 和 $L_{preserve}$ ）
+
+
+
+出现问题：
+
+```json
+  0%|                                     | 0/50 [00:00<?, ?it/s]
+v_unsafe_adapter tensor(-0.0489, device='cuda:0', grad_fn=<MeanBackward0>) tensor(1.1342, device='cuda:0', grad_fn=<StdBackward0>)
+v_unsafe_origin tensor(0.0464, device='cuda:0') tensor(1.0773, device='cuda:0')
+True <MeanBackward0 object at 0x7f68f0d92e90>
+Epoch 0, Step 1/50, Loss: 2.2981321811676025
+
+  2%|██                                   | 1/50 [00:11<09:41, 11.87s/it]
+v_unsafe_adapter tensor(nan, device='cuda:0', grad_fn=<MeanBackward0>) tensor(nan, device='cuda:0', grad_fn=<StdBackward0>)
+v_unsafe_origin tensor(-0.0166, device='cuda:0') tensor(1.0902, device='cuda:0')
+True <MeanBackward0 object at 0x7f68f0d92ec0>
+Epoch 0, Step 2/50, Loss: nan
+```
+
+从第二步去噪开始，`v_unsafe_adapter`变成`NaN`，而 `v_unsafe_origin` 一切正常，考虑是eraser初始化的问题，对`AdapterEraser`在其`__init__`方法中进行正态初始化，再尝试训练，仍然第二步就爆掉...
+并且发现原始代码对`AdapterEraser`的up层的初始化是`nn.init.zeros_`，这可能导致了adapter参数在训练过程中被冲飞。
+
+
+```json
+  0%|               | 0/50 [00:00<?, ?it/s]
+loss_unlearn: 2.7803542613983154
+v_neg mean/std: -0.5395044088363647 1.9355318546295166
+v_unsafe_adapter mean/std: 0.04594830796122551 1.0853095054626465
+Epoch 0, Step 1/50, Loss: 2.7804088592529297
+  2%|██             | 1/50 [00:11<09:40, 11.85s/it]
+loss_unlearn: nan
+v_neg mean/std: 0.15456829965114594 1.727604627609253
+v_unsafe_adapter mean/std: nan nan
+Epoch 0, Step 2/50, Loss: nan
+```
+
+优化器前进一步，adapter参数直接被冲飞
+
+```json
+transformer_blocks.0.attn1.adapter.down.weight - mean: nan, std: nan, requires_grad: True
+transformer_blocks.0.attn1.adapter.down.bias - mean: nan, std: nan, requires_grad: True
+transformer_blocks.0.attn1.adapter.up.weight - mean: nan, std: nan, requires_grad: True
+transformer_blocks.0.attn1.adapter.up.bias - mean: nan, std: nan, requires_grad: True
+......
+```
+
