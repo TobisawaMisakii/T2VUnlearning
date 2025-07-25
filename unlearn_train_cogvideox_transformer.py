@@ -10,8 +10,6 @@ import torch.nn as nn
 import torch.optim as optim
 from diffusers import (
     CogVideoXPipeline,
-    CogVideoXDDIMScheduler,
-    CogVideoXDPMScheduler,
     CogVideoXImageToVideoPipeline,
     CogVideoXVideoToVideoPipeline,
 )
@@ -19,8 +17,8 @@ from diffusers import (
 from diffusers.models.transformers.cogvideox_transformer_3d import CogVideoXBlock
 from diffusers.utils import export_to_video, load_image, load_video
 from receler.erasers.cogvideo_erasers import (
-    inject_eraser, 
-    CogVideoXWithEraser, 
+    inject_eraser,
+    CogVideoXWithEraser,
     setup_cogvideo_adapter_eraser,
     )
 from receler.erasers.utils import DisableEraser
@@ -39,11 +37,11 @@ def args_parser():
         description="Generate a video from a text prompt using CogVideoX"
     )
     parser.add_argument(
-        "--concept", type=str, required=True, 
+        "--concept", type=str, required=True,
         help="The sensitive content to be erased"
     )
     parser.add_argument(
-        "--prompt_path", type=str, required=True, 
+        "--prompt_path", type=str, required=True,
         help="The path to the text file containing the prompt, now assuming using nudity-ring-a-bell.csv, which contains unsafe and safe prompt pairs"
     )
     parser.add_argument(
@@ -55,39 +53,39 @@ def args_parser():
         help="The path of the pre-trained model to be used"
     )
     parser.add_argument(
-        "--eraser_ckpt_path", type=str, default=None, 
+        "--eraser_ckpt_path", type=str, default=None,
         help="The path of the eraser weights/config to be saved"
     )
     parser.add_argument(
-        "--eraser_rank", type=int, default=128, 
+        "--eraser_rank", type=int, default=128,
         help="The rank of the eraser weights"
     )
     parser.add_argument(
-        "--num_inference_steps", type=int, default=50, 
+        "--num_inference_steps", type=int, default=50,
         help="Number of steps for the inference process"
     )
     parser.add_argument(
-        "--num_frames", type=int, default=49, 
+        "--num_frames", type=int, default=49,
         help="Number of frames to generate per prompt, should be 8N + 1 where N <= 6"
     )
     parser.add_argument(
-        "--generate_type", type=str, default="t2v", 
+        "--generate_type", type=str, default="t2v",
         help="The type of video generation (e.g., 't2v', 'i2v', 'v2v')"
     )
     parser.add_argument(
-        "--dtype", type=str, default="bfloat16", 
+        "--dtype", type=str, default="bfloat16",
         help="The data type for computation (e.g., 'float16' or 'bfloat16')"
     )
     parser.add_argument(
-        "--num_epoch", type=int, default=20, 
+        "--num_epoch", type=int, default=20,
         help="Number of epochs for training"
     )
     parser.add_argument(
-        "--eta", type=float, default=7.0, 
+        "--eta", type=float, default=7.0,
         help="The eta hyperparam for unlearning training"
     )
     parser.add_argument(
-        "--seed", type=int, default=42, 
+        "--seed", type=int, default=42,
         help="The seed for reproducibility"
     )
     return parser.parse_args()
@@ -165,6 +163,10 @@ def unlearn_train(args):
     text_encoder = pipe.text_encoder
     transformer = pipe.transformer
 
+    for param in transformer.parameters():
+        param.requires_grad = False
+
+
     adapter_transformer = copy.deepcopy(transformer)
     eraser = setup_cogvideo_adapter_eraser(
         model=adapter_transformer,
@@ -172,6 +174,16 @@ def unlearn_train(args):
         device="cuda",
         dtype=dtype,
     )
+
+    for block in transformer.transformer_blocks:
+    if hasattr(block, "adapter"):
+        for param in block.adapter.parameters():
+            param.requires_grad = True
+
+    for name, param in transformer.named_parameters():
+        if param.requires_grad:
+            print(f"Trainable: {name}, shape: {tuple(param.shape)}")
+    exit(0)
 
     adam_optimizer = optim.AdamW(
         params=[param for module in eraser.values() for param in module.parameters()],
@@ -207,7 +219,7 @@ def unlearn_train(args):
             max_sequence_length=226,
             device='cuda',
         )[0]    # torch.Size([1, 226, 4096])
-        
+
         res_prompt_embeds = pipe.encode_prompt(
             res_prompt,
             negative_prompt=None,
@@ -409,7 +421,7 @@ def train_data_loader(prompt_path, batch_size=1):
     df = pd.read_csv(prompt_path)
     prompts = df['prompt'].tolist()
     res_prompts = df['normal prompt'].tolist()
-    
+
     for i in range(0, len(prompts), batch_size):
         batch_prompts = prompts[i:i + batch_size]
         batch_res_prompts = res_prompts[i:i + batch_size]
