@@ -88,6 +88,24 @@ def args_parser():
         "--seed", type=int, default=42,
         help="The seed for reproducibility"
     )
+
+    parser.add_argument(
+        "--output_path", type=str, default="./output.mp4",
+        help="The path where the generated video will be saved"
+    )
+    parser.add_argument(
+        "--output_type",
+        type=Literal["latent", "video"],
+        default="video",
+        choices=["latent", "video"],
+        help="The output type of the generated video, can be 'latent' or 'video'",
+    )
+    parser.add_argument(
+        "is_train",
+        type=bool,
+        default=False,
+        help="Whether to train the model or do inference"
+    )
     return parser.parse_args()
 
 
@@ -149,6 +167,161 @@ def retrieve_timesteps(
         scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
         timesteps = scheduler.timesteps
     return timesteps, num_inference_steps
+
+
+class CogVideoXPipelineOutput(BaseOutput):
+    r"""
+    Output class for CogVideo pipelines.
+
+    Args:
+        frames (`torch.Tensor`, `np.ndarray`, or List[List[PIL.Image.Image]]):
+            List of video outputs - It can be a nested list of length `batch_size,` with each sub-list containing
+            denoised PIL image sequences of length `num_frames.` It can also be a NumPy array or Torch tensor of shape
+            `(batch_size, num_frames, channels, height, width)`.
+    """
+
+    frames: torch.Tensor
+
+
+def inference(args):
+    dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
+    device = 'cuda'
+    pipe = CogVideoXPipeline.from_pretrained(args.model_path, torch_dtype=dtype)
+    pipe.enable_sequential_cpu_offload()
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        args.model_path, subfolder="scheduler", torch_dtype=dtype
+    )
+
+    vae =  pipe.vae
+    text_encoder = pipe.text_encoder
+    transformer = pipe.transformer
+
+    # freeze transformer
+    for param in transformer.parameters():
+        param.requires_grad = False
+    for param in vae.parameters():
+        param.requires_grad = False
+    for param in text_encoder.parameters():
+        param.requires_grad = False
+
+    vae.to("cuda")
+    text_encoder.to("cuda")
+    transformer.to("cuda")
+    adapter_transformer.to("cuda")
+
+    height = transformer.config.sample_height * pipe.vae_scale_factor_spatial
+    width = transformer.config.sample_width * pipe.vae_scale_factor_spatial
+    num_frames = transformer.config.sample_frames
+
+    num_videos_per_prompt = 1
+    do_classifier_free_guidance = False
+
+    with torch.no_grad():
+        # 1. Encode input prompt
+        batch_size = 1
+        prompt_embeds = pipe.encode_prompt(
+            args.prompt,
+            negative_prompt=None,
+            do_classifier_free_guidance=do_classifier_free_guidance,
+            num_videos_per_prompt=num_videos_per_prompt,
+            max_sequence_length=226,
+            device='cuda',
+        )[0].detach()    # torch.Size([1, 226, 4096])
+
+        # 2. Prepare timesteps
+        timesteps, num_inference_steps = retrieve_timesteps(
+            scheduler, args.num_inference_steps, device='cuda', timesteps=None
+        ) # do not support custom timesteps
+        pipe._num_timesteps = len(timesteps)
+        # print(f"Using timesteps: {timesteps}")
+
+        # 3. Prepare latents
+        latent_frames = (num_frames - 1) // pipe.vae_scale_factor_temporal + 1
+
+        patch_size_t = pipe.transformer.config.patch_size_t
+        additional_frames = 0
+        if patch_size_t is not None and latent_frames % patch_size_t != 0:
+            additional_frames = patch_size_t - latent_frames % patch_size_t
+            num_frames += additional_frames * pipe.vae_scale_factor_temporal
+
+        latent_channels = pipe.transformer.config.in_channels
+        latents = pipe.prepare_latents(
+            batch_size * num_videos_per_prompt,
+            latent_channels,
+            num_frames,
+            height,
+            width,
+            prompt_embeds.dtype,
+            device='cuda',
+            generator=None,
+            latents=None,
+        )# torch.Size([1, 13, 16, 60, 90])
+        # print(f"Using latents shape: {latents.shape}")
+
+        # Create rotary embeds if required
+        image_rotary_emb = (
+            pipe._prepare_rotary_positional_embeddings(height, width, latents.size(1), device)
+            if transformer.config.use_rotary_positional_embeddings
+            else None
+        )
+
+        # Denoising loop
+        num_warmup_steps = max(len(timesteps) - num_inference_steps * pipe.scheduler.order, 0)
+
+        with pipe.progress_bar(total=num_inference_steps) as progress_bar:
+            # for DPM-solver++
+            old_pred_original_sample = None
+            for i, t in enumerate(timesteps):
+
+                pipe._current_timestep = t
+                latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+                latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+                # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
+                timestep = t.expand(latent_model_input.shape[0])
+
+                # predict noise model_output
+                # no adapter, unsafe prompt
+                noise_pred = transformer(
+                    hidden_states=latent_model_input,
+                    encoder_hidden_states=prompt_embeds,
+                    timestep=timestep,
+                    image_rotary_emb=image_rotary_emb,
+                    attention_kwargs=None,
+                    return_dict=False,
+                )[0]    # torch.Size([1, 13, 16, 60, 90])
+                noise_pred = noise_pred.float().detach()
+
+
+                # compute the previous noisy sample x_t -> x_t-1
+                if not isinstance(scheduler, CogVideoXDPMScheduler):
+                    latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                else:
+                    latents, old_pred_original_sample = scheduler.step(
+                        noise_pred,
+                        old_pred_original_sample,
+                        t,
+                        timesteps[i - 1] if i > 0 else None,
+                        latents,
+                        return_dict=False,
+                    )
+                latents = latents.to(prompt_embeds.dtype)
+
+                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % scheduler.order == 0):
+                    progress_bar.update()
+
+            pipe._current_timestep = None
+
+    if not args.output_type == "latent":
+            # Discard any padding frames that were added for CogVideoX 1.5
+            latents = latents[:, additional_frames:]
+            video = pipe.decode_latents(latents)
+            video = pipe.video_processor.postprocess_video(video=video, output_type=output_type)
+    else:
+        video = latents
+
+    video = CogVideoXPipelineOutput(frames=video).frames[0]
+    export_to_video(video, args.output_path + "_original.mp4", fps=8)
 
 
 def unlearn_train(args):
@@ -440,7 +613,7 @@ def unlearn_train(args):
                     if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % scheduler.order == 0):
                         progress_bar.update()
 
-            self._current_timestep = None
+            pipe._current_timestep = None
 
 
 def train_data_loader(prompt_path, batch_size=1):
@@ -469,4 +642,7 @@ if __name__ == "__main__":
     )
 
     dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
-    unlearn_train(args)
+    if args.is_train:
+        unlearn_train(args)
+    else:
+        inference(args)

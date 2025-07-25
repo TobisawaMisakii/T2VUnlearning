@@ -1,4 +1,5 @@
 CUDA_VISIBLE_DEVICES=0 python unlearn_train_cogvideox_transformer.py \
+  --is_train True \
   --concept="nudity" \
   --prompt_path="/root/autodl-tmp/T2VUnlearning/evaluation/data/nudity-ring-a-bell.csv" \
   --model_path /root/autodl-tmp/models/cogvideox-2b \
