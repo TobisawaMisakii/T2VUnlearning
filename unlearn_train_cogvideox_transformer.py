@@ -193,9 +193,14 @@ def unlearn_train(args):
     #     if param.requires_grad:
     #         print(f"Trainable in atptransformer: {name}, shape: {tuple(param.shape)}")
 
+    for name, module in eraser.items():
+        for pname, param in module.named_parameters():
+            print(f"{name}.{pname} - mean: {param.data.mean()}, std: {param.data.std()}, requires_grad: {param.requires_grad}")
+    # exit(0)
+
     adam_optimizer = optim.AdamW(
         params=[param for module in eraser.values() for param in module.parameters()],
-        lr=1e-4,
+        lr=1e-6,
         betas=(0.9, 0.999),
         weight_decay=0.01,
     )
@@ -215,109 +220,151 @@ def unlearn_train(args):
     num_videos_per_prompt = 1
     do_classifier_free_guidance = False
 
-    for prompt, res_prompt in train_data_loader(args.prompt_path):
-        batch_size = 1
+    for epoch in range(args.num_epoch):
+        # only compute once
+        zero_embeds = pipe.encode_prompt(
+                    "",
+                    negative_prompt=None,
+                    do_classifier_free_guidance=do_classifier_free_guidance,
+                    num_videos_per_prompt=num_videos_per_prompt,
+                    max_sequence_length=226,
+                    device='cuda',
+                )[0].detach()    # torch.Size([1, 226, 4096])
+        
+        # for each prompt pairs do unlearning training
+        for prompt, res_prompt in train_data_loader(args.prompt_path):
+            batch_size = 1
 
-        with torch.no_grad():
-            # 1. Encode input prompt
-            prompt_embeds = pipe.encode_prompt(
-                prompt,
-                negative_prompt=None,
-                do_classifier_free_guidance=do_classifier_free_guidance,
-                num_videos_per_prompt=num_videos_per_prompt,
-                max_sequence_length=226,
-                device='cuda',
-            )[0].detach()    # torch.Size([1, 226, 4096])
+            with torch.no_grad():
+                # 1. Encode input prompt
+                prompt_embeds = pipe.encode_prompt(
+                    prompt,
+                    negative_prompt=None,
+                    do_classifier_free_guidance=do_classifier_free_guidance,
+                    num_videos_per_prompt=num_videos_per_prompt,
+                    max_sequence_length=226,
+                    device='cuda',
+                )[0].detach()    # torch.Size([1, 226, 4096])
 
-            res_prompt_embeds = pipe.encode_prompt(
-                res_prompt,
-                negative_prompt=None,
-                do_classifier_free_guidance=do_classifier_free_guidance,
-                num_videos_per_prompt=num_videos_per_prompt,
-                max_sequence_length=226,
-                device='cuda',
-            )[0].detach()    # torch.Size([1, 226, 4096])
+                res_prompt_embeds = pipe.encode_prompt(
+                    res_prompt,
+                    negative_prompt=None,
+                    do_classifier_free_guidance=do_classifier_free_guidance,
+                    num_videos_per_prompt=num_videos_per_prompt,
+                    max_sequence_length=226,
+                    device='cuda',
+                )[0].detach()    # torch.Size([1, 226, 4096])
 
-            zero_embeds = pipe.encode_prompt(
-                "",
-                negative_prompt=None,
-                do_classifier_free_guidance=do_classifier_free_guidance,
-                num_videos_per_prompt=num_videos_per_prompt,
-                max_sequence_length=226,
-                device='cuda',
-            )[0].detach()    # torch.Size([1, 226, 4096])
+                # 2. Prepare timesteps
+                timesteps, num_inference_steps = retrieve_timesteps(
+                    scheduler, args.num_inference_steps, device='cuda', timesteps=None
+                ) # do not support custom timesteps
+                pipe._num_timesteps = len(timesteps)
+                # print(f"Using timesteps: {timesteps}")
 
-            # 2. Prepare timesteps
-            timesteps, num_inference_steps = retrieve_timesteps(
-                scheduler, args.num_inference_steps, device='cuda', timesteps=None
-            ) # do not support custom timesteps
-            pipe._num_timesteps = len(timesteps)
-            # print(f"Using timesteps: {timesteps}")
+                # 3. Prepare latents
+                latent_frames = (num_frames - 1) // pipe.vae_scale_factor_temporal + 1
 
-            # 3. Prepare latents
-            latent_frames = (num_frames - 1) // pipe.vae_scale_factor_temporal + 1
+                patch_size_t = pipe.transformer.config.patch_size_t
+                additional_frames = 0
+                if patch_size_t is not None and latent_frames % patch_size_t != 0:
+                    additional_frames = patch_size_t - latent_frames % patch_size_t
+                    num_frames += additional_frames * pipe.vae_scale_factor_temporal
 
-            patch_size_t = pipe.transformer.config.patch_size_t
-            additional_frames = 0
-            if patch_size_t is not None and latent_frames % patch_size_t != 0:
-                additional_frames = patch_size_t - latent_frames % patch_size_t
-                num_frames += additional_frames * pipe.vae_scale_factor_temporal
+                latent_channels = pipe.transformer.config.in_channels
+                latents = pipe.prepare_latents(
+                    batch_size * num_videos_per_prompt,
+                    latent_channels,
+                    num_frames,
+                    height,
+                    width,
+                    prompt_embeds.dtype,
+                    device='cuda',
+                    generator=None,
+                    latents=None,
+                )# torch.Size([1, 13, 16, 60, 90])
+                # print(f"Using latents shape: {latents.shape}")
 
-            latent_channels = pipe.transformer.config.in_channels
-            latents = pipe.prepare_latents(
-                batch_size * num_videos_per_prompt,
-                latent_channels,
-                num_frames,
-                height,
-                width,
-                prompt_embeds.dtype,
-                device='cuda',
-                generator=None,
-                latents=None,
-            )# torch.Size([1, 13, 16, 60, 90])
-            # print(f"Using latents shape: {latents.shape}")
+                # Create rotary embeds if required
+                image_rotary_emb = (
+                    pipe._prepare_rotary_positional_embeddings(height, width, latents.size(1), device)
+                    if transformer.config.use_rotary_positional_embeddings
+                    else None
+                )
 
-            # Create rotary embeds if required
-            image_rotary_emb = (
-                pipe._prepare_rotary_positional_embeddings(height, width, latents.size(1), device)
-                if transformer.config.use_rotary_positional_embeddings
-                else None
-            )
+            # Denoising loop
+            num_warmup_steps = max(len(timesteps) - num_inference_steps * pipe.scheduler.order, 0)
 
-        # Denoising loop
-        num_warmup_steps = max(len(timesteps) - num_inference_steps * pipe.scheduler.order, 0)
+            with pipe.progress_bar(total=num_inference_steps) as progress_bar:
+                # for DPM-solver++
+                old_pred_original_sample = None
+                for i, t in enumerate(timesteps):
 
-        with pipe.progress_bar(total=num_inference_steps) as progress_bar:
-            # for DPM-solver++
-            old_pred_original_sample = None
-            for i, t in enumerate(timesteps):
+                    pipe._current_timestep = t
+                    latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+                    latent_model_input = scheduler.scale_model_input(latent_model_input, t)
 
-                pipe._current_timestep = t
-                latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-                latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+                    # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
+                    timestep = t.expand(latent_model_input.shape[0])
 
-                # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-                timestep = t.expand(latent_model_input.shape[0])
+                    # predict noise model_output
 
-                # predict noise model_output
+                    with torch.no_grad():
+                        # no adapter, unsafe prompt
+                        noise_pred = transformer(
+                            hidden_states=latent_model_input,
+                            encoder_hidden_states=prompt_embeds,
+                            timestep=timestep,
+                            image_rotary_emb=image_rotary_emb,
+                            attention_kwargs=None,
+                            return_dict=False,
+                        )[0]    # torch.Size([1, 13, 16, 60, 90])
+                        noise_pred = noise_pred.float().detach()
+                        v_unsafe_origin = noise_pred
+                        # print("v_unsafe_origin shape:", v_unsafe_origin.shape)
+                        # print("v_unsafe_origin grad:", v_unsafe_origin.requires_grad)
 
-                with torch.no_grad():
-                    # no adapter, unsafe prompt
-                    noise_pred = transformer(
+                        # no adapter, safe prompt
+                        v_safe_origin = transformer(
+                            hidden_states=latent_model_input,
+                            encoder_hidden_states=res_prompt_embeds,
+                            timestep=timestep,
+                            image_rotary_emb=image_rotary_emb,
+                            attention_kwargs=None,
+                            return_dict=False,
+                        )[0]
+                        v_safe_origin = v_safe_origin.float().detach()
+                        # print("v_safe_origin shape:", v_safe_origin.shape)
+                        # print("v_safe_origin grad:", v_safe_origin.requires_grad)
+
+                        # no adapter, no prompt
+                        v_noprompt_origin = transformer(
+                            hidden_states=latent_model_input,
+                            encoder_hidden_states=zero_embeds,
+                            timestep=timestep,
+                            image_rotary_emb=image_rotary_emb,
+                            attention_kwargs=None,
+                            return_dict=False,
+                        )[0]
+                        v_noprompt_origin = v_noprompt_origin.float().detach()
+                        # print("v_noprompt_origin shape:", v_noprompt_origin.shape)
+                        # print("v_noprompt_origin grad:", v_noprompt_origin.requires_grad)
+
+                    # with adapter, unsafe prompt
+                    v_unsafe_adapter = adapter_transformer(
                         hidden_states=latent_model_input,
                         encoder_hidden_states=prompt_embeds,
                         timestep=timestep,
                         image_rotary_emb=image_rotary_emb,
                         attention_kwargs=None,
                         return_dict=False,
-                    )[0]    # torch.Size([1, 13, 16, 60, 90])
-                    noise_pred = noise_pred.float().detach()
-                    v_unsafe_origin = noise_pred
-                    print("v_unsafe_origin shape:", v_unsafe_origin.shape)
-                    print("v_unsafe_origin grad:", v_unsafe_origin.requires_grad)
+                    )[0]
+                    v_unsafe_adapter = v_unsafe_adapter.float()
+                    # print("v_unsafe_adapter shape:", v_unsafe_adapter.shape)
+                    # print("v_unsafe_adapter grad:", v_unsafe_adapter.requires_grad)
 
-                    # no adapter, safe prompt
-                    v_safe_origin = transformer(
+                    # with adapter, safe prompt
+                    v_safe_adapter = adapter_transformer(
                         hidden_states=latent_model_input,
                         encoder_hidden_states=res_prompt_embeds,
                         timestep=timestep,
@@ -325,111 +372,73 @@ def unlearn_train(args):
                         attention_kwargs=None,
                         return_dict=False,
                     )[0]
-                    v_safe_origin = v_safe_origin.float().detach()
-                    print("v_safe_origin shape:", v_safe_origin.shape)
-                    print("v_safe_origin grad:", v_safe_origin.requires_grad)
+                    v_safe_adapter = v_safe_adapter.float()
 
-                    # no adapter, no prompt
-                    v_noprompt_origin = transformer(
-                        hidden_states=latent_model_input,
-                        encoder_hidden_states=zero_embeds,
-                        timestep=timestep,
-                        image_rotary_emb=image_rotary_emb,
-                        attention_kwargs=None,
-                        return_dict=False,
-                    )[0]
-                    v_noprompt_origin = v_noprompt_origin.float().detach()
-                    print("v_noprompt_origin shape:", v_noprompt_origin.shape)
-                    print("v_noprompt_origin grad:", v_noprompt_origin.requires_grad)
+                    # calculate loss
+                    loss_unlearn = 0.0
+                    loss_preserve = 0.0
+                    loss_localize = 0.0
 
-                # with adapter, unsafe prompt
-                v_unsafe_adapter = adapter_transformer(
-                    hidden_states=latent_model_input,
-                    encoder_hidden_states=prompt_embeds,
-                    timestep=timestep,
-                    image_rotary_emb=image_rotary_emb,
-                    attention_kwargs=None,
-                    return_dict=False,
-                )[0]
-                v_unsafe_adapter = v_unsafe_adapter.float()
-                print("v_unsafe_adapter shape:", v_unsafe_adapter.shape)
-                print("v_unsafe_adapter grad:", v_unsafe_adapter.requires_grad)
+                    # loss unlearn
+                    v_neg = v_noprompt_origin - args.eta * (v_unsafe_origin - v_noprompt_origin)
+                    loss_unlearn = torch.mean((v_neg - v_unsafe_adapter) ** 2)
+                    # print(loss_unlearn.requires_grad, loss_unlearn.grad_fn)
 
-                # with adapter, safe prompt
-                v_safe_adapter = adapter_transformer(
-                    hidden_states=latent_model_input,
-                    encoder_hidden_states=res_prompt_embeds,
-                    timestep=timestep,
-                    image_rotary_emb=image_rotary_emb,
-                    attention_kwargs=None,
-                    return_dict=False,
-                )[0]
-                v_safe_adapter = v_safe_adapter.float()
-                print("v_safe_adapter shape:", v_safe_adapter.shape)
-                print("v_safe_adapter grad:", v_safe_adapter.requires_grad)
+                    print("loss_unlearn:", loss_unlearn.item())
+                    print("v_neg mean/std:", v_neg.mean().item(), v_neg.std().item())
+                    print("v_unsafe_adapter mean/std:", v_unsafe_adapter.mean().item(), v_unsafe_adapter.std().item())
 
 
-                # calculate loss
-                loss_unlearn = 0.0
-                loss_preserve = 0.0
-                loss_localize = 0.0
+                    # loss preserve
+                    loss_preserve = torch.mean((v_safe_origin - v_safe_adapter) ** 2)
 
-                # loss unlearn
-                # adapter模型， 在unsafe prompt下的第30个（最后一个）transformer block的 feedforward layer 输出 $v_{\theta'}(x_t, c, t)$
-                v_neg = v_noprompt_origin - args.eta * (v_unsafe_origin - v_noprompt_origin)
-                loss_unlearn = torch.mean((v_neg - v_unsafe_adapter) ** 2)
-                print(f"loss_unlearn: {loss_unlearn.item()}")
-                print(loss_unlearn.requires_grad)
+                    # loss localize
 
-                # loss preserve
-                loss_preserve = torch.mean((v_safe_origin - v_safe_adapter) ** 2)
 
-                # loss localize
+                    loss = loss_unlearn + loss_preserve + loss_localize
 
-                loss = loss_unlearn + loss_preserve + loss_localize
 
-                # backward
-                adam_optimizer.zero_grad()
-                loss.backward()
-                adam_optimizer.step()
-                wandb.log({
-                    "epoch": epoch,
-                    "prompt": prompt,
-                    "res_prompt": res_prompt,
-                    "loss_unlearn": loss_unlearn.item(),
-                    "loss_preserve": loss_preserve.item(),
-                    "loss_localize": loss_localize.item(),
-                    "loss_total": loss.item(),
-                })
+                    # backward
+                    adam_optimizer.zero_grad()
+                    loss.backward()
+                    adam_optimizer.step()
 
-                # perform guidance
-                if use_dynamic_cfg:
-                    pipe._guidance_scale = 1 + guidance_scale * (
-                        (1 - math.cos(math.pi * ((num_inference_steps - t.item()) / num_inference_steps) ** 5.0)) / 2
-                    )
-                if do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + pipe.guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    for name, module in eraser.items():
+                        for pname, param in module.named_parameters():
+                            print(f"{name}.{pname} - mean: {param.data.mean()}, std: {param.data.std()}, requires_grad: {param.requires_grad}")
+                    exit(0)
 
-                # compute the previous noisy sample x_t -> x_t-1
-                if not isinstance(scheduler, CogVideoXDPMScheduler):
-                    latents = scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
-                else:
-                    latents, old_pred_original_sample = scheduler.step(
-                        noise_pred,
-                        old_pred_original_sample,
-                        t,
-                        timesteps[i - 1] if i > 0 else None,
-                        latents,
-                        **extra_step_kwargs,
-                        return_dict=False,
-                    )
-                latents = latents.to(prompt_embeds.dtype)
 
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % scheduler.order == 0):
-                    progress_bar.update()
+                    wandb.log({
+                        "epoch": epoch,
+                        "prompt": prompt,
+                        "res_prompt": res_prompt,
+                        "loss_unlearn": loss_unlearn.item(),
+                        "loss_preserve": loss_preserve.item(),
+                        "loss_localize": loss_localize.item() if isinstance(loss_localize, torch.Tensor) else loss_localize,
+                        "loss_total": loss.item(),
+                    })
+                    print(f"Epoch {epoch}, Step {i+1}/{len(timesteps)}, Loss: {loss.item()}")
 
-        self._current_timestep = None
+
+                    # compute the previous noisy sample x_t -> x_t-1
+                    if not isinstance(scheduler, CogVideoXDPMScheduler):
+                        latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                    else:
+                        latents, old_pred_original_sample = scheduler.step(
+                            noise_pred,
+                            old_pred_original_sample,
+                            t,
+                            timesteps[i - 1] if i > 0 else None,
+                            latents,
+                            return_dict=False,
+                        )
+                    latents = latents.to(prompt_embeds.dtype)
+
+                    if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % scheduler.order == 0):
+                        progress_bar.update()
+
+            self._current_timestep = None
 
 
 def train_data_loader(prompt_path, batch_size=1):
