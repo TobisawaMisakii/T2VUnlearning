@@ -281,7 +281,7 @@ CUDA_VISIBLE_DEVICES=0 python unlearn_train_cogvideox_transformer.py \
 
 出现问题：
 
-```json
+```shell
   0%|                                     | 0/50 [00:00<?, ?it/s]
 v_unsafe_adapter tensor(-0.0489, device='cuda:0', grad_fn=<MeanBackward0>) tensor(1.1342, device='cuda:0', grad_fn=<StdBackward0>)
 v_unsafe_origin tensor(0.0464, device='cuda:0') tensor(1.0773, device='cuda:0')
@@ -299,7 +299,7 @@ Epoch 0, Step 2/50, Loss: nan
 并且发现原始代码对`AdapterEraser`的up层的初始化是`nn.init.zeros_`，这可能导致了adapter参数在训练过程中被冲飞。
 
 
-```json
+```shell
   0%|               | 0/50 [00:00<?, ?it/s]
 loss_unlearn: 2.7803542613983154
 v_neg mean/std: -0.5395044088363647 1.9355318546295166
@@ -314,7 +314,7 @@ Epoch 0, Step 2/50, Loss: nan
 
 优化器前进一步，adapter参数直接被冲飞
 
-```json
+```shell
 transformer_blocks.0.attn1.adapter.down.weight - mean: nan, std: nan, requires_grad: True
 transformer_blocks.0.attn1.adapter.down.bias - mean: nan, std: nan, requires_grad: True
 transformer_blocks.0.attn1.adapter.up.weight - mean: nan, std: nan, requires_grad: True

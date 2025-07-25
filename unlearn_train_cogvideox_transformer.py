@@ -171,6 +171,8 @@ def unlearn_train(args):
     for param in text_encoder.parameters():
         param.requires_grad = False
 
+    # 检查任意一个参数的requires_grad状态
+    print(next(pipe.transformer.parameters()).requires_grad)
 
     adapter_transformer = copy.deepcopy(transformer)
     eraser = setup_cogvideo_adapter_eraser(
