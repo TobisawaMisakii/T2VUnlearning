@@ -4,6 +4,7 @@ import wandb
 from typing import Optional, Union, List
 import inspect
 from datetime import datetime
+from diffusers.utils import BaseOutput
 
 import torch
 import torch.nn as nn
@@ -20,6 +21,7 @@ from receler.erasers.cogvideo_erasers import (
     inject_eraser,
     CogVideoXWithEraser,
     setup_cogvideo_adapter_eraser,
+    save_cogvideo_eraser_from_transformer,
     )
 from receler.erasers.utils import DisableEraser
 
@@ -37,12 +39,15 @@ def args_parser():
         description="Generate a video from a text prompt using CogVideoX"
     )
     parser.add_argument(
-        "--concept", type=str, required=True,
+        "--concept", type=str,
         help="The sensitive content to be erased"
     )
     parser.add_argument(
-        "--prompt_path", type=str, required=True,
+        "--prompt_path", type=str,
         help="The path to the text file containing the prompt, now assuming using nudity-ring-a-bell.csv, which contains unsafe and safe prompt pairs"
+    )
+    parser.add_argument(
+        "--prompt", type=str, default=None,
     )
     parser.add_argument(
         "--image_or_video_path",type=str,default=None,
@@ -94,17 +99,22 @@ def args_parser():
         help="The path where the generated video will be saved"
     )
     parser.add_argument(
-        "--output_type",
-        type=Literal["latent", "video"],
-        default="video",
-        choices=["latent", "video"],
-        help="The output type of the generated video, can be 'latent' or 'video'",
-    )
-    parser.add_argument(
-        "is_train",
+        "--is_train",
         type=bool,
         default=False,
         help="Whether to train the model or do inference"
+    )
+    parser.add_argument(
+        "--alpah",
+        type=float,
+        default=1.0,
+        help="The alpha hyperparam for localization loss"
+    )
+    parser.add_argument(
+        "--beta",
+        type=float,
+        default=0.0,
+        help="The beta hyperparam for preservation loss"
     )
     return parser.parse_args()
 
@@ -183,16 +193,17 @@ class CogVideoXPipelineOutput(BaseOutput):
     frames: torch.Tensor
 
 
-def inference(args):
+def inference_decomposed(args):
     dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
     device = 'cuda'
     pipe = CogVideoXPipeline.from_pretrained(args.model_path, torch_dtype=dtype)
     pipe.enable_sequential_cpu_offload()
-    scheduler = CogVideoXDPMScheduler.from_pretrained(
-        args.model_path, subfolder="scheduler", torch_dtype=dtype
-    )
+    # scheduler = CogVideoXDPMScheduler.from_pretrained(
+    #     args.model_path, subfolder="scheduler", torch_dtype=dtype
+    # )
+    scheduler = CogVideoXDDIMScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
 
-    vae =  pipe.vae
+    vae = pipe.vae
     text_encoder = pipe.text_encoder
     transformer = pipe.transformer
 
@@ -204,47 +215,53 @@ def inference(args):
     for param in text_encoder.parameters():
         param.requires_grad = False
 
-    vae.to("cuda")
-    text_encoder.to("cuda")
-    transformer.to("cuda")
-    adapter_transformer.to("cuda")
+    # vae.to("cuda")
+    # text_encoder.to("cuda")
+    # transformer.to("cuda")
+    # adapter_transformer.to("cuda")
 
     height = transformer.config.sample_height * pipe.vae_scale_factor_spatial
     width = transformer.config.sample_width * pipe.vae_scale_factor_spatial
     num_frames = transformer.config.sample_frames
 
     num_videos_per_prompt = 1
-    do_classifier_free_guidance = False
+    do_classifier_free_guidance = True
+    negative_prompt = None
+    use_dynamic_cfg = True
+    guidance_scale = 6.0
 
     with torch.no_grad():
         # 1. Encode input prompt
         batch_size = 1
-        prompt_embeds = pipe.encode_prompt(
+        prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
             args.prompt,
-            negative_prompt=None,
-            do_classifier_free_guidance=do_classifier_free_guidance,
+            negative_prompt,
+            do_classifier_free_guidance,
             num_videos_per_prompt=num_videos_per_prompt,
             max_sequence_length=226,
             device='cuda',
-        )[0].detach()    # torch.Size([1, 226, 4096])
+        ).detach()    # torch.Size([1, 226, 4096])
+        if do_classifier_free_guidance:
+            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+
 
         # 2. Prepare timesteps
         timesteps, num_inference_steps = retrieve_timesteps(
             scheduler, args.num_inference_steps, device='cuda', timesteps=None
-        ) # do not support custom timesteps
+        )
         pipe._num_timesteps = len(timesteps)
         # print(f"Using timesteps: {timesteps}")
 
         # 3. Prepare latents
         latent_frames = (num_frames - 1) // pipe.vae_scale_factor_temporal + 1
 
-        patch_size_t = pipe.transformer.config.patch_size_t
+        patch_size_t = transformer.config.patch_size_t
         additional_frames = 0
         if patch_size_t is not None and latent_frames % patch_size_t != 0:
             additional_frames = patch_size_t - latent_frames % patch_size_t
             num_frames += additional_frames * pipe.vae_scale_factor_temporal
 
-        latent_channels = pipe.transformer.config.in_channels
+        latent_channels = transformer.config.in_channels
         latents = pipe.prepare_latents(
             batch_size * num_videos_per_prompt,
             latent_channels,
@@ -266,7 +283,7 @@ def inference(args):
         )
 
         # Denoising loop
-        num_warmup_steps = max(len(timesteps) - num_inference_steps * pipe.scheduler.order, 0)
+        num_warmup_steps = max(len(timesteps) - num_inference_steps * scheduler.order, 0)
 
         with pipe.progress_bar(total=num_inference_steps) as progress_bar:
             # for DPM-solver++
@@ -281,7 +298,6 @@ def inference(args):
                 timestep = t.expand(latent_model_input.shape[0])
 
                 # predict noise model_output
-                # no adapter, unsafe prompt
                 noise_pred = transformer(
                     hidden_states=latent_model_input,
                     encoder_hidden_states=prompt_embeds,
@@ -291,6 +307,15 @@ def inference(args):
                     return_dict=False,
                 )[0]    # torch.Size([1, 13, 16, 60, 90])
                 noise_pred = noise_pred.float().detach()
+
+                if use_dynamic_cfg:
+                    pipe._guidance_scale = 1 + guidance_scale * (
+                    (1 - math.cos(math.pi * ((num_inference_steps - t.item()) / num_inference_steps) ** 5.0)) / 2
+                )
+                if do_classifier_free_guidance:
+                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+
 
 
                 # compute the previous noisy sample x_t -> x_t-1
@@ -310,13 +335,14 @@ def inference(args):
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % scheduler.order == 0):
                     progress_bar.update()
 
-            pipe._current_timestep = None
+        pipe._current_timestep = None
 
+    args.output_type = 'pil'
     if not args.output_type == "latent":
-            # Discard any padding frames that were added for CogVideoX 1.5
-            latents = latents[:, additional_frames:]
-            video = pipe.decode_latents(latents)
-            video = pipe.video_processor.postprocess_video(video=video, output_type=output_type)
+        # Discard any padding frames that were added for CogVideoX 1.5
+        latents = latents[:, additional_frames:]
+        video = pipe.decode_latents(latents)
+        video = pipe.video_processor.postprocess_video(video=video, output_type=args.output_type)
     else:
         video = latents
 
@@ -335,6 +361,10 @@ def unlearn_train(args):
     tokenizer = pipe.tokenizer
     text_encoder = pipe.text_encoder
     transformer = pipe.transformer
+
+    do_classifier_free_guidance = True
+    negative_prompt = None
+    use_dynamic_cfg = True
 
     # freeze transformer
     for param in transformer.parameters():
@@ -399,7 +429,7 @@ def unlearn_train(args):
         # only compute once
         zero_embeds = pipe.encode_prompt(
                     "",
-                    negative_prompt=None,
+                    negative_prompt,
                     do_classifier_free_guidance=do_classifier_free_guidance,
                     num_videos_per_prompt=num_videos_per_prompt,
                     max_sequence_length=226,
@@ -414,7 +444,7 @@ def unlearn_train(args):
                 # 1. Encode input prompt
                 prompt_embeds = pipe.encode_prompt(
                     prompt,
-                    negative_prompt=None,
+                    negative_prompt,
                     do_classifier_free_guidance=do_classifier_free_guidance,
                     num_videos_per_prompt=num_videos_per_prompt,
                     max_sequence_length=226,
@@ -423,7 +453,7 @@ def unlearn_train(args):
 
                 res_prompt_embeds = pipe.encode_prompt(
                     res_prompt,
-                    negative_prompt=None,
+                    negative_prompt,
                     do_classifier_free_guidance=do_classifier_free_guidance,
                     num_videos_per_prompt=num_videos_per_prompt,
                     max_sequence_length=226,
@@ -440,13 +470,13 @@ def unlearn_train(args):
                 # 3. Prepare latents
                 latent_frames = (num_frames - 1) // pipe.vae_scale_factor_temporal + 1
 
-                patch_size_t = pipe.transformer.config.patch_size_t
+                patch_size_t = transformer.config.patch_size_t
                 additional_frames = 0
                 if patch_size_t is not None and latent_frames % patch_size_t != 0:
                     additional_frames = patch_size_t - latent_frames % patch_size_t
                     num_frames += additional_frames * pipe.vae_scale_factor_temporal
 
-                latent_channels = pipe.transformer.config.in_channels
+                latent_channels = transformer.config.in_channels
                 latents = pipe.prepare_latents(
                     batch_size * num_videos_per_prompt,
                     latent_channels,
@@ -468,7 +498,7 @@ def unlearn_train(args):
                 )
 
             # Denoising loop
-            num_warmup_steps = max(len(timesteps) - num_inference_steps * pipe.scheduler.order, 0)
+            num_warmup_steps = max(len(timesteps) - num_inference_steps * scheduler.order, 0)
 
             with pipe.progress_bar(total=num_inference_steps) as progress_bar:
                 # for DPM-solver++
@@ -568,21 +598,12 @@ def unlearn_train(args):
                     loss_preserve = torch.mean((v_safe_origin - v_safe_adapter) ** 2)
 
                     # loss localize
-
-
-                    loss = loss_unlearn + loss_preserve + loss_localize
-
+                    loss = loss_unlearn + args.alpha * loss_preserve + args.beta * loss_localize
 
                     # backward
                     adam_optimizer.zero_grad()
                     loss.backward()
                     adam_optimizer.step()
-
-                    for name, module in eraser.items():
-                        for pname, param in module.named_parameters():
-                            print(f"{name}.{pname} - mean: {param.data.mean()}, std: {param.data.std()}, requires_grad: {param.requires_grad}")
-                    exit(0)
-
 
                     wandb.log({
                         "epoch": epoch,
@@ -614,6 +635,11 @@ def unlearn_train(args):
                         progress_bar.update()
 
             pipe._current_timestep = None
+    save_cogvideo_eraser_from_transformer(
+        folder_path=args.eraser_ckpt_path,
+        transformer=adapter_transformer,
+    )
+    
 
 
 def train_data_loader(prompt_path, batch_size=1):
@@ -630,19 +656,18 @@ def train_data_loader(prompt_path, batch_size=1):
 
 if __name__ == "__main__":
     args = args_parser()
-
-    project_name = "cogvideox-unlearn"
-    exp_name = "l_unlearn_exp"
-    run_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
-    wandb.init(
-        project=project_name,  # 自定义项目名
-        name=f"{exp_name}-{run_name}",      # 每次运行的名字，可换成时间戳、实验参数等
-        config=vars(args),            # 保存参数信息
-        mode="disabled",
-    )
-
     dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
+    
     if args.is_train:
+        project_name = "cogvideox-unlearn"
+        exp_name = "l_unlearn_exp"
+        run_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
+        wandb.init(
+            project=project_name,  # 自定义项目名
+            name=f"{exp_name}-{run_name}",      # 每次运行的名字，可换成时间戳、实验参数等
+            config=vars(args),            # 保存参数信息
+            mode="disabled",
+        )
         unlearn_train(args)
     else:
-        inference(args)
+        inference_decomposed(args)

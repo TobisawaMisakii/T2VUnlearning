@@ -99,8 +99,8 @@ def generate_video(
     # We recommend using `CogVideoXDDIMScheduler` for CogVideoX-2B.
     # using `CogVideoXDPMScheduler` for CogVideoX-5B / CogVideoX-5B-I2V.
 
-    # pipe.scheduler = CogVideoXDDIMScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
-    pipe.scheduler = CogVideoXDPMScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
+    pipe.scheduler = CogVideoXDDIMScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
+    # pipe.scheduler = CogVideoXDPMScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
 
     # 3. Enable CPU offload for the model.
     # turn off if you have multiple GPUs or enough GPU memory(such as H100) and it will cost less time in inference

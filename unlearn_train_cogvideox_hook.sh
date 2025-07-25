@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=0 python unlearn_train_cogvideox.py \
+CUDA_VISIBLE_DEVICES=0 python unlearn_train_cogvideox_hook.py \
 --concept="nudity" \
 --prompt_path="/root/autodl-tmp/T2VUnlearning/evaluation/data/nudity-ring-a-bell.csv" \
 --model_path="/root/autodl-tmp/models/cogvideox-2b" \

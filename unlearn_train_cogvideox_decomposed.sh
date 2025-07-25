@@ -1,5 +1,5 @@
-CUDA_VISIBLE_DEVICES=0 python unlearn_train_cogvideox_transformer.py \
-  --is_train True \
+CUDA_VISIBLE_DEVICES=0 python unlearn_train_cogvideox_decomposed.py \
+  --is_train \
   --concept="nudity" \
   --prompt_path="/root/autodl-tmp/T2VUnlearning/evaluation/data/nudity-ring-a-bell.csv" \
   --model_path /root/autodl-tmp/models/cogvideox-2b \
@@ -11,4 +11,6 @@ CUDA_VISIBLE_DEVICES=0 python unlearn_train_cogvideox_transformer.py \
   --generate_type t2v \
   --dtype float16 \
   --eta 7.0 \
+  --alpha 1.0 \
+  --beta 0.0 \
   --seed 42
