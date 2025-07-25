@@ -388,10 +388,10 @@ def unlearn_train(args):
     # print("adapter to_q std:", adapter_transformer.transformer_blocks[0].attn1.attn.to_q.weight.std().item())
     # exit(0)
     adapter_parameters = [param for module in eraser.values() for param in module.parameters()]
-    for p in adapter_parameters:
-        p.data = p.data.half()
-        # p._fp32_copy = p.data.float()
-        p._fp32_copy = (p.data.float() + 1e-6 * torch.randn_like(p.data.float()))
+    # for p in adapter_parameters:
+    #     p.data = p.data.half()
+    #     # p._fp32_copy = p.data.float()
+    #     p._fp32_copy = (p.data.float() + 1e-6 * torch.randn_like(p.data.float()))
 
 
     
@@ -644,16 +644,16 @@ def unlearn_train(args):
                     # backward
                     adam_optimizer.zero_grad()
                     loss.backward()
-                    for p in adapter_parameters:
-                        p._fp32_copy.grad = p.grad.float()
+                    # for p in adapter_parameters:
+                        # p._fp32_copy.grad = p.grad.float()
                     
-                    fp32_params = [p._fp32_copy for p in adapter_parameters]
-                    adam_optimizer.param_groups[0]["params"] = fp32_params  # 确保 optimizer 用的是 fp32 copy
-                    torch.nn.utils.clip_grad_norm_(fp32_params, max_norm=1.0)
+                    # fp32_params = [p._fp32_copy for p in adapter_parameters]
+                    # adam_optimizer.param_groups[0]["params"] = fp32_params  # 确保 optimizer 用的是 fp32 copy
+                    # torch.nn.utils.clip_grad_norm_(fp32_params, max_norm=1.0)
                     adam_optimizer.step()
 
-                    for p in adapter_parameters:
-                        p.data.copy_(p._fp32_copy.half())
+                    # for p in adapter_parameters:
+                        # p.data.copy_(p._fp32_copy.half())
 
 
                     wandb.log({
@@ -716,7 +716,7 @@ def train_data_loader(prompt_path, batch_size=1):
 if __name__ == "__main__":
     args = args_parser()
     dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
-    
+
     if args.is_train:
         project_name = "cogvideox-unlearn"
         exp_name = "l_unlearn_exp"

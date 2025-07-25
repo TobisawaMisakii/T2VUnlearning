@@ -7,7 +7,7 @@ CUDA_VISIBLE_DEVICES=0 python unlearn_train_cogvideox_decomposed.py \
   --eraser_ckpt_path="/root/autodl-tmp/T2VUnlearning/adapter/self2_cogvideox2b_nudity_erasure" \
   --num_inference_steps 50 \
   --num_frames 17 \
-  --num_epoch 10 \
+  --num_epoch 1 \
   --generate_type t2v \
   --dtype float16 \
   --eta 7.0 \
