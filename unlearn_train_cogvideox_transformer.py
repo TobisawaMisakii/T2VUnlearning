@@ -163,7 +163,12 @@ def unlearn_train(args):
     text_encoder = pipe.text_encoder
     transformer = pipe.transformer
 
+    # freeze transformer
     for param in transformer.parameters():
+        param.requires_grad = False
+    for param in vae.parameters():
+        param.requires_grad = False
+    for param in text_encoder.parameters():
         param.requires_grad = False
 
 
@@ -175,15 +180,18 @@ def unlearn_train(args):
         dtype=dtype,
     )
 
+    
     for block in transformer.transformer_blocks:
-    if hasattr(block, "adapter"):
-        for param in block.adapter.parameters():
-            param.requires_grad = True
+        if hasattr(block, "adapter"):
+            for param in block.adapter.parameters():
+                param.requires_grad = True
 
-    for name, param in transformer.named_parameters():
-        if param.requires_grad:
-            print(f"Trainable: {name}, shape: {tuple(param.shape)}")
-    exit(0)
+    # for name, param in transformer.named_parameters():
+    #     if param.requires_grad:
+    #         print(f"Trainable: {name}, shape: {tuple(param.shape)}")
+    # for name, param in adapter_transformer.named_parameters():
+    #     if param.requires_grad:
+    #         print(f"Trainable in atptransformer: {name}, shape: {tuple(param.shape)}")
 
     adam_optimizer = optim.AdamW(
         params=[param for module in eraser.values() for param in module.parameters()],
@@ -210,70 +218,71 @@ def unlearn_train(args):
     for prompt, res_prompt in train_data_loader(args.prompt_path):
         batch_size = 1
 
-        # 1. Encode input prompt
-        prompt_embeds = pipe.encode_prompt(
-            prompt,
-            negative_prompt=None,
-            do_classifier_free_guidance=do_classifier_free_guidance,
-            num_videos_per_prompt=num_videos_per_prompt,
-            max_sequence_length=226,
-            device='cuda',
-        )[0]    # torch.Size([1, 226, 4096])
+        with torch.no_grad():
+            # 1. Encode input prompt
+            prompt_embeds = pipe.encode_prompt(
+                prompt,
+                negative_prompt=None,
+                do_classifier_free_guidance=do_classifier_free_guidance,
+                num_videos_per_prompt=num_videos_per_prompt,
+                max_sequence_length=226,
+                device='cuda',
+            )[0].detach()    # torch.Size([1, 226, 4096])
 
-        res_prompt_embeds = pipe.encode_prompt(
-            res_prompt,
-            negative_prompt=None,
-            do_classifier_free_guidance=do_classifier_free_guidance,
-            num_videos_per_prompt=num_videos_per_prompt,
-            max_sequence_length=226,
-            device='cuda',
-        )[0]    # torch.Size([1, 226, 4096])
+            res_prompt_embeds = pipe.encode_prompt(
+                res_prompt,
+                negative_prompt=None,
+                do_classifier_free_guidance=do_classifier_free_guidance,
+                num_videos_per_prompt=num_videos_per_prompt,
+                max_sequence_length=226,
+                device='cuda',
+            )[0].detach()    # torch.Size([1, 226, 4096])
 
-        zero_embeds = pipe.encode_prompt(
-            "",
-            negative_prompt=None,
-            do_classifier_free_guidance=do_classifier_free_guidance,
-            num_videos_per_prompt=num_videos_per_prompt,
-            max_sequence_length=226,
-            device='cuda',
-        )[0]    # torch.Size([1, 226, 4096])
+            zero_embeds = pipe.encode_prompt(
+                "",
+                negative_prompt=None,
+                do_classifier_free_guidance=do_classifier_free_guidance,
+                num_videos_per_prompt=num_videos_per_prompt,
+                max_sequence_length=226,
+                device='cuda',
+            )[0].detach()    # torch.Size([1, 226, 4096])
 
-        # 2. Prepare timesteps
-        timesteps, num_inference_steps = retrieve_timesteps(
-            scheduler, args.num_inference_steps, device='cuda', timesteps=None
-        ) # do not support custom timesteps
-        pipe._num_timesteps = len(timesteps)
-        # print(f"Using timesteps: {timesteps}")
+            # 2. Prepare timesteps
+            timesteps, num_inference_steps = retrieve_timesteps(
+                scheduler, args.num_inference_steps, device='cuda', timesteps=None
+            ) # do not support custom timesteps
+            pipe._num_timesteps = len(timesteps)
+            # print(f"Using timesteps: {timesteps}")
 
-        # 3. Prepare latents
-        latent_frames = (num_frames - 1) // pipe.vae_scale_factor_temporal + 1
+            # 3. Prepare latents
+            latent_frames = (num_frames - 1) // pipe.vae_scale_factor_temporal + 1
 
-        patch_size_t = pipe.transformer.config.patch_size_t
-        additional_frames = 0
-        if patch_size_t is not None and latent_frames % patch_size_t != 0:
-            additional_frames = patch_size_t - latent_frames % patch_size_t
-            num_frames += additional_frames * pipe.vae_scale_factor_temporal
+            patch_size_t = pipe.transformer.config.patch_size_t
+            additional_frames = 0
+            if patch_size_t is not None and latent_frames % patch_size_t != 0:
+                additional_frames = patch_size_t - latent_frames % patch_size_t
+                num_frames += additional_frames * pipe.vae_scale_factor_temporal
 
-        latent_channels = pipe.transformer.config.in_channels
-        latents = pipe.prepare_latents(
-            batch_size * num_videos_per_prompt,
-            latent_channels,
-            num_frames,
-            height,
-            width,
-            prompt_embeds.dtype,
-            device='cuda',
-            generator=None,
-            latents=None,
-        )# torch.Size([1, 13, 16, 60, 90])
-        # print(f"Using latents shape: {latents.shape}")
+            latent_channels = pipe.transformer.config.in_channels
+            latents = pipe.prepare_latents(
+                batch_size * num_videos_per_prompt,
+                latent_channels,
+                num_frames,
+                height,
+                width,
+                prompt_embeds.dtype,
+                device='cuda',
+                generator=None,
+                latents=None,
+            )# torch.Size([1, 13, 16, 60, 90])
+            # print(f"Using latents shape: {latents.shape}")
 
-        # Create rotary embeds if required
-        image_rotary_emb = (
-            pipe._prepare_rotary_positional_embeddings(height, width, latents.size(1), device)
-            if transformer.config.use_rotary_positional_embeddings
-            else None
-        )
+            # Create rotary embeds if required
+            image_rotary_emb = (
+                pipe._prepare_rotary_positional_embeddings(height, width, latents.size(1), device)
+                if transformer.config.use_rotary_positional_embeddings
+                else None
+            )
 
         # Denoising loop
         num_warmup_steps = max(len(timesteps) - num_inference_steps * pipe.scheduler.order, 0)
@@ -292,30 +301,46 @@ def unlearn_train(args):
 
                 # predict noise model_output
 
-                # no adapter, unsafe prompt
-                noise_pred = transformer(
-                    hidden_states=latent_model_input,
-                    encoder_hidden_states=prompt_embeds,
-                    timestep=timestep,
-                    image_rotary_emb=image_rotary_emb,
-                    attention_kwargs=None,
-                    return_dict=False,
-                )[0]    # torch.Size([1, 13, 16, 60, 90])
-                noise_pred = noise_pred.float()
-                v_unsafe_origin = noise_pred
-                print("v_unsafe_origin shape:", v_unsafe_origin.shape)
+                with torch.no_grad():
+                    # no adapter, unsafe prompt
+                    noise_pred = transformer(
+                        hidden_states=latent_model_input,
+                        encoder_hidden_states=prompt_embeds,
+                        timestep=timestep,
+                        image_rotary_emb=image_rotary_emb,
+                        attention_kwargs=None,
+                        return_dict=False,
+                    )[0]    # torch.Size([1, 13, 16, 60, 90])
+                    noise_pred = noise_pred.float().detach()
+                    v_unsafe_origin = noise_pred
+                    print("v_unsafe_origin shape:", v_unsafe_origin.shape)
+                    print("v_unsafe_origin grad:", v_unsafe_origin.requires_grad)
 
-                # no adapter, safe prompt
-                v_safe_origin = transformer(
-                    hidden_states=latent_model_input,
-                    encoder_hidden_states=res_prompt_embeds,
-                    timestep=timestep,
-                    image_rotary_emb=image_rotary_emb,
-                    attention_kwargs=None,
-                    return_dict=False,
-                )[0]
-                v_safe_origin = v_safe_origin.float()
-                print("v_safe_origin shape:", v_safe_origin.shape)
+                    # no adapter, safe prompt
+                    v_safe_origin = transformer(
+                        hidden_states=latent_model_input,
+                        encoder_hidden_states=res_prompt_embeds,
+                        timestep=timestep,
+                        image_rotary_emb=image_rotary_emb,
+                        attention_kwargs=None,
+                        return_dict=False,
+                    )[0]
+                    v_safe_origin = v_safe_origin.float().detach()
+                    print("v_safe_origin shape:", v_safe_origin.shape)
+                    print("v_safe_origin grad:", v_safe_origin.requires_grad)
+
+                    # no adapter, no prompt
+                    v_noprompt_origin = transformer(
+                        hidden_states=latent_model_input,
+                        encoder_hidden_states=zero_embeds,
+                        timestep=timestep,
+                        image_rotary_emb=image_rotary_emb,
+                        attention_kwargs=None,
+                        return_dict=False,
+                    )[0]
+                    v_noprompt_origin = v_noprompt_origin.float().detach()
+                    print("v_noprompt_origin shape:", v_noprompt_origin.shape)
+                    print("v_noprompt_origin grad:", v_noprompt_origin.requires_grad)
 
                 # with adapter, unsafe prompt
                 v_unsafe_adapter = adapter_transformer(
@@ -328,6 +353,7 @@ def unlearn_train(args):
                 )[0]
                 v_unsafe_adapter = v_unsafe_adapter.float()
                 print("v_unsafe_adapter shape:", v_unsafe_adapter.shape)
+                print("v_unsafe_adapter grad:", v_unsafe_adapter.requires_grad)
 
                 # with adapter, safe prompt
                 v_safe_adapter = adapter_transformer(
@@ -340,18 +366,8 @@ def unlearn_train(args):
                 )[0]
                 v_safe_adapter = v_safe_adapter.float()
                 print("v_safe_adapter shape:", v_safe_adapter.shape)
+                print("v_safe_adapter grad:", v_safe_adapter.requires_grad)
 
-                # no adapter, no prompt
-                v_noprompt_origin = transformer(
-                    hidden_states=latent_model_input,
-                    encoder_hidden_states=zero_embeds,
-                    timestep=timestep,
-                    image_rotary_emb=image_rotary_emb,
-                    attention_kwargs=None,
-                    return_dict=False,
-                )[0]
-                v_noprompt_origin = v_noprompt_origin.float()
-                print("v_noprompt_origin shape:", v_noprompt_origin.shape)
 
                 # calculate loss
                 loss_unlearn = 0.0
