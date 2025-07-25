@@ -11,6 +11,10 @@
 * 北大仓库提供的带adapter的架构
 * 仿照diffusers库，实现一个CogVideoX的inference
 
+剩余问题：
+* localization loss暂未实现
+* 训练速度慢，10个prompt跑一个epoch需半小时+
+
 ## Adapter
 
 ## adapter structure
