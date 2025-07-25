@@ -3,6 +3,9 @@ import torch.nn as nn
 import os
 import json
 
+import math
+import torch.nn.init as init
+
 from diffusers.models.transformers.cogvideox_transformer_3d import CogVideoXBlock
 from diffusers.models.attention import Attention
 from typing import Any, Dict, Optional, Tuple, Union
@@ -91,6 +94,14 @@ class CogVideoXWithEraser(nn.Module):
         super().__init__()
         self.attn = attn
         self.adapter = AdapterEraser(attn.to_v.weight.shape[-1], eraser_rank)
+        # self._init_weights(self.adapter)
+    
+    def _init_weights(self, module):
+        for m in module.modules():
+            if isinstance(m, nn.Linear):
+                init.kaiming_uniform_(m.weight, a=math.sqrt(5))
+                if m.bias is not None:
+                    init.zeros_(m.bias)
 
     def forward(
         self,
