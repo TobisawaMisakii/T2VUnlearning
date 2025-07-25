@@ -13,7 +13,7 @@
 
 剩余问题：
 * localization loss暂未实现
-* 训练速度慢，10个prompt跑一个epoch需半小时+
+* 训练速度慢，10个prompt跑一个epoch需半小时+，没办法测试多轮训练后的效果
 
 ## Adapter
 
@@ -480,7 +480,7 @@ to_k.weight std: 0.0
 to_v.weight std: 0.0
 ```
 
-原来是set up erasers时出错：
+原来是set up erasers时出错（回顾md的时候才发现这是在爆显存的时候做了优化，结果导致错误...）：
 
 ```python
 def setup_cogvideo_adapter_eraser(model, eraser_rank, device, dtype):
@@ -498,6 +498,21 @@ def setup_cogvideo_adapter_eraser(model, eraser_rank, device, dtype):
 之前的to_empty()会导致attn层全部重置为0
 
 修改之后成功训练
+
+并且对adapter做了初始化：
+```python
+class AdapterEraser(nn.Module, EraserControlMixin):
+    def __init__(self, dim, mid_dim):
+        super().__init__()
+        self.down = nn.Linear(dim, mid_dim)
+        self.act = nn.GELU()
+        self.up = zero_module(nn.Linear(mid_dim, dim))
+        # Initialize weights
+        nn.init.normal_(self.down.weight, mean=0.0, std=1e-2)
+        nn.init.zeros_(self.down.bias)
+        nn.init.normal_(self.up.weight, mean=0.0, std=1e-2)
+        nn.init.zeros_(self.up.bias)
+```
 
 
 
